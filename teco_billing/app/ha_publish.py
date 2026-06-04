@@ -16,7 +16,6 @@ No MQTT and no custom integration required. When SUPERVISOR_TOKEN is absent
 """
 from __future__ import annotations
 
-import json
 import os
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -218,12 +217,32 @@ async def publish(data: dict, log) -> None:
             log.exception("sensor update failed")
 
 
+def _grid_template() -> dict:
+    """A complete HA 'grid' energy source (flat schema) fed by TECO + its cost."""
+    return {
+        "type": "grid",
+        "stat_energy_from": STAT_ENERGY,
+        "stat_energy_to": None,
+        "stat_cost": STAT_COST,
+        "stat_compensation": None,
+        "entity_energy_price": None,
+        "number_energy_price": None,
+        "entity_energy_price_export": None,
+        "number_energy_price_export": None,
+        "cost_adjustment_day": 0.0,
+    }
+
+
 async def configure_energy(log) -> bool:
-    """Attach teco:energy_cost to the teco:energy_consumption grid source in the HA
-    Energy Dashboard, so it shows $ alongside kWh. Non-destructive:
-      - if our consumption stat is already a grid source -> just set its cost stat
-      - else if no grid consumption is configured yet -> add ours (+cost)
-      - else (the user already has a different grid source) -> leave it alone
+    """Wire TECO into the HA Energy Dashboard — SAFELY, without double-counting.
+
+    HA's grid source schema is flat: each grid source has a `stat_energy_from`
+    (consumption) and `stat_cost`. Behavior:
+      - TECO already the consumption source -> ensure its stat_cost = teco:energy_cost
+      - NO grid consumption configured at all -> add a TECO grid source (+cost)
+      - a *different* grid source already exists (e.g. a panel/CT monitor) ->
+        leave it ALONE (adding TECO would double-count) and just log that TECO's
+        statistics are available to add manually.
     """
     if not available():
         return True
@@ -235,32 +254,28 @@ async def configure_energy(log) -> bool:
                 if (await ws.receive_json()).get("type") != "auth_ok":
                     return False
                 await ws.send_json({"id": 1, "type": "energy/get_prefs"})
-                resp = await ws.receive_json()
-                prefs = resp.get("result") or {}
+                prefs = (await ws.receive_json()).get("result") or {}
                 sources = prefs.get("energy_sources", [])
-                log.info("energy get_prefs raw: %s", json.dumps(prefs)[:1000])
-                ours = {"stat_energy_from": STAT_ENERGY, "stat_cost": STAT_COST}
-                grid = next((x for x in sources if x.get("type") == "grid"), None)
+                grids = [x for x in sources if x.get("type") == "grid"]
+
+                ours = next((g for g in grids if g.get("stat_energy_from") == STAT_ENERGY), None)
                 changed = False
-                if grid is None:
-                    sources.append({"type": "grid", "flow_from": [ours], "flow_to": [],
-                                    "cost_adjustment_day": 0.0})
+                if ours is not None:
+                    if ours.get("stat_cost") != STAT_COST:
+                        ours["stat_cost"] = STAT_COST
+                        changed = True
+                elif not any(g.get("stat_energy_from") for g in grids):
+                    sources.append(_grid_template())
                     changed = True
                 else:
-                    grid.setdefault("flow_to", [])
-                    grid.setdefault("cost_adjustment_day", 0.0)
-                    ff = grid.setdefault("flow_from", [])
-                    existing = next((f for f in ff if f.get("stat_energy_from") == STAT_ENERGY), None)
-                    if existing:
-                        if existing.get("stat_cost") != STAT_COST:
-                            existing["stat_cost"] = STAT_COST
-                            changed = True
-                    elif not ff:
-                        ff.append(ours)
-                        changed = True
-                    else:
-                        log.info("energy: existing grid source found; leaving it alone "
-                                 "(add 'teco:energy_consumption' manually if you want TECO instead)")
+                    other = next((g.get("stat_energy_from") for g in grids
+                                  if g.get("stat_energy_from")), "?")
+                    log.info("energy: a grid source (%s) is already configured; leaving it "
+                             "alone to avoid double-counting. TECO statistics "
+                             "'teco:energy_consumption' / 'teco:energy_cost' are available to "
+                             "add or wire manually.", other)
+                    return True
+
                 if changed:
                     await ws.send_json({
                         "id": 2, "type": "energy/save_prefs",
@@ -274,7 +289,7 @@ async def configure_energy(log) -> bool:
                     log.error("energy save_prefs failed: %s",
                               str(resp2.get("error") or resp2)[:400])
                     return False
-                log.info("energy dashboard already has TECO cost wired")
+                log.info("energy dashboard already wired for TECO")
                 return True
     except Exception:  # noqa: BLE001
         log.exception("configure_energy failed")
