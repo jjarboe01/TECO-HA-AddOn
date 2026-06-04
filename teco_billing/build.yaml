@@ -1,5 +1,0 @@
-# Use the official Playwright image (bundles a known-good Chromium + OS deps) as the
-# base for both architectures. Chromium is required to satisfy reCAPTCHA v3 at login.
-build_from:
-  amd64: mcr.microsoft.com/playwright/python:v1.43.0-jammy
-  aarch64: mcr.microsoft.com/playwright/python:v1.43.0-jammy
