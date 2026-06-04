@@ -387,8 +387,7 @@ async def _poll_loop():
                 if ha_publish.available():
                     await ha_publish.publish(data, LOG)     # statistics + sensors
                     if SETUP_ENERGY and not energy_configured:
-                        await ha_publish.configure_energy(LOG)   # wire Energy Dashboard once
-                        energy_configured = True
+                        energy_configured = await ha_publish.configure_energy(LOG)  # retry until ok
                 else:
                     LOG.info("refreshed (%d bills); HA publish skipped (no SUPERVISOR_TOKEN)",
                              data.get("counts", {}).get("archived_bills", 0))

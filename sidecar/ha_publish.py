@@ -217,7 +217,7 @@ async def publish(data: dict, log) -> None:
             log.exception("sensor update failed")
 
 
-async def configure_energy(log) -> None:
+async def configure_energy(log) -> bool:
     """Attach teco:energy_cost to the teco:energy_consumption grid source in the HA
     Energy Dashboard, so it shows $ alongside kWh. Non-destructive:
       - if our consumption stat is already a grid source -> just set its cost stat
@@ -225,14 +225,14 @@ async def configure_energy(log) -> None:
       - else (the user already has a different grid source) -> leave it alone
     """
     if not available():
-        return
+        return True
     try:
         async with aiohttp.ClientSession() as s:
             async with s.ws_connect(CORE_WS, heartbeat=30) as ws:
                 await ws.receive_json()  # auth_required
                 await ws.send_json({"type": "auth", "access_token": SUPERVISOR_TOKEN})
                 if (await ws.receive_json()).get("type") != "auth_ok":
-                    return
+                    return False
                 await ws.send_json({"id": 1, "type": "energy/get_prefs"})
                 resp = await ws.receive_json()
                 prefs = resp.get("result") or {}
@@ -261,16 +261,23 @@ async def configure_energy(log) -> None:
                         log.info("energy: existing grid source found; leaving it alone "
                                  "(add 'teco:energy_consumption' manually if you want TECO instead)")
                 if changed:
-                    prefs["energy_sources"] = sources
-                    prefs.setdefault("device_consumption", prefs.get("device_consumption", []))
-                    await ws.send_json({"id": 2, "type": "energy/save_prefs", **prefs})
-                    ok = (await ws.receive_json()).get("success")
-                    log.info("energy dashboard %s with TECO consumption + cost",
-                             "configured" if ok else "save FAILED")
-                else:
-                    log.info("energy dashboard already has TECO cost wired")
+                    await ws.send_json({
+                        "id": 2, "type": "energy/save_prefs",
+                        "energy_sources": sources,
+                        "device_consumption": prefs.get("device_consumption", []),
+                    })
+                    resp2 = await ws.receive_json()
+                    if resp2.get("success"):
+                        log.info("energy dashboard configured with TECO consumption + cost")
+                        return True
+                    log.error("energy save_prefs failed: %s",
+                              str(resp2.get("error") or resp2)[:400])
+                    return False
+                log.info("energy dashboard already has TECO cost wired")
+                return True
     except Exception:  # noqa: BLE001
         log.exception("configure_energy failed")
+        return False
 
 
 async def publish_sensors(data: dict, log) -> None:
