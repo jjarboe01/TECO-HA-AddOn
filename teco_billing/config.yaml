@@ -1,5 +1,5 @@
 name: TECO Billing
-version: "0.4.2"
+version: "0.4.3"
 slug: teco_billing
 description: >-
   Pulls Tampa Electric (TECO) billing, usage, cost and service-period data into
@@ -42,6 +42,7 @@ options:
   auth_token: ""
   backfill_bills: 36
   poll_interval_hours: 6
+  sensor_refresh_min: 5
   session_ttl_min: 30
   log_level: info
 schema:
@@ -50,5 +51,6 @@ schema:
   auth_token: password?
   backfill_bills: int(1,120)
   poll_interval_hours: int(1,24)
+  sensor_refresh_min: int(1,60)
   session_ttl_min: int(5,240)
   log_level: list(trace|debug|info|warning|error)

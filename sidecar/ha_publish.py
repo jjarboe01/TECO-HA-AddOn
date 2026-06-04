@@ -185,7 +185,7 @@ def _sensor_payloads(data: dict) -> list[tuple[str, object, dict]]:
     return [(eid, ("" if st is None else st), at) for eid, st, at in out if st is not None]
 
 
-async def _update_sensors(session, data, log):
+async def _update_sensors(session, data, log, quiet=False):
     n = 0
     for eid, state, attrs in _sensor_payloads(data):
         try:
@@ -198,7 +198,7 @@ async def _update_sensors(session, data, log):
                     log.warning("state %s -> HTTP %s", eid, r.status)
         except Exception as e:  # noqa: BLE001
             log.warning("state %s failed: %s", eid, e)
-    log.info("updated %d TECO sensor entities", n)
+    (log.debug if quiet else log.info)("updated %d TECO sensor entities", n)
 
 
 async def publish(data: dict, log) -> None:
@@ -215,3 +215,15 @@ async def publish(data: dict, log) -> None:
             await _update_sensors(session, data, log)
         except Exception:  # noqa: BLE001
             log.exception("sensor update failed")
+
+
+async def publish_sensors(data: dict, log) -> None:
+    """Re-post only the sensor states (cheap heartbeat — keeps entities alive and
+    recovers them quickly after an HA restart). No statistics, no TECO fetch."""
+    if not available() or not data:
+        return
+    async with aiohttp.ClientSession() as session:
+        try:
+            await _update_sensors(session, data, log, quiet=True)
+        except Exception:  # noqa: BLE001
+            log.exception("sensor heartbeat failed")

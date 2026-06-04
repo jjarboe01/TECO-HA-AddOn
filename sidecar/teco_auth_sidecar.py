@@ -62,6 +62,7 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 SESSION_TTL = int(os.environ.get("SESSION_TTL_MIN", "30")) * 60
 BACKFILL_BILLS = int(os.environ.get("BACKFILL_BILLS", "36"))
 POLL_INTERVAL = max(1, int(os.environ.get("POLL_INTERVAL_HOURS", "6"))) * 3600
+SENSOR_REFRESH = max(1, int(os.environ.get("SENSOR_REFRESH_MIN", "5"))) * 60
 HEADLESS = os.environ.get("HEADLESS", "1") != "0"
 TOKEN = os.environ.get("SIDECAR_TOKEN")
 CACHE_DIR = os.environ.get("CACHE_DIR", os.path.join(os.path.dirname(__file__), "cache"))
@@ -124,6 +125,7 @@ class TecoSession:
         self._logged_in_at = 0.0
         self._lock = asyncio.Lock()
         self._cache = _load_cache()  # invoice_id -> parsed bill dict
+        self._last_data: dict | None = None  # last full payload (for sensor heartbeat)
 
     # ---- browser / auth ---------------------------------------------------- #
     async def _ensure_browser(self) -> None:
@@ -281,7 +283,7 @@ class TecoSession:
 
             # assemble the response from the ENTIRE cache (full retained history)
             details, daily_clean = self._assemble_from_cache()
-            return {
+            result = {
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
                 "account": models.to_jsonable(account),
                 "current_bill": models.to_jsonable(current_bill),
@@ -292,6 +294,8 @@ class TecoSession:
                 "counts": {"bills": len(details), "daily": len(daily_clean),
                            "months": len(monthly), "archived_bills": len(self._cache)},
             }
+            self._last_data = result   # for the sensor heartbeat between full fetches
+            return result
 
     def _assemble_from_cache(self) -> tuple[list[dict], list[dict]]:
         """Build (bills, daily_usage) from the full append-only cache, newest first."""
@@ -365,18 +369,29 @@ session = TecoSession()
 
 
 async def _poll_loop():
-    """Periodically refresh from TECO and publish to Home Assistant (add-on mode)."""
+    """Two cadences in one loop:
+      - full TECO fetch every POLL_INTERVAL (scrape + import statistics + sensors)
+      - sensor heartbeat every SENSOR_REFRESH (re-post cached sensor states only)
+    The heartbeat keeps the REST-state entities alive and makes them reappear within
+    a few minutes of an HA restart, without hitting TECO more often.
+    """
+    last_fetch = 0.0
     while True:
         try:
-            data = await session.fetch_all()
-            if ha_publish.available():
-                await ha_publish.publish(data, LOG)
-            else:
-                LOG.info("refreshed (%d bills); HA publish skipped (no SUPERVISOR_TOKEN)",
-                         data.get("counts", {}).get("archived_bills", 0))
+            now = time.time()
+            if session._last_data is None or (now - last_fetch) >= POLL_INTERVAL:
+                data = await session.fetch_all()           # heavy: TECO scrape
+                last_fetch = now
+                if ha_publish.available():
+                    await ha_publish.publish(data, LOG)     # statistics + sensors
+                else:
+                    LOG.info("refreshed (%d bills); HA publish skipped (no SUPERVISOR_TOKEN)",
+                             data.get("counts", {}).get("archived_bills", 0))
+            elif ha_publish.available():
+                await ha_publish.publish_sensors(session._last_data, LOG)  # cheap heartbeat
         except Exception:  # noqa: BLE001
             LOG.exception("poll cycle failed")
-        await asyncio.sleep(POLL_INTERVAL)
+        await asyncio.sleep(SENSOR_REFRESH)
 
 try:
     from contextlib import asynccontextmanager
