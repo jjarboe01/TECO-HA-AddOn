@@ -240,8 +240,7 @@ async def configure_energy(log) -> bool:
                 log.info("energy prefs: %d sources: %s", len(sources),
                          [(x.get("type"), [list(f.keys()) for f in x.get("flow_from", [])])
                           for x in sources])
-                ours = {"stat_energy_from": STAT_ENERGY, "stat_cost": STAT_COST,
-                        "entity_energy_price": None, "number_energy_price": None}
+                ours = {"stat_energy_from": STAT_ENERGY, "stat_cost": STAT_COST}
                 grid = next((x for x in sources if x.get("type") == "grid"), None)
                 changed = False
                 if grid is None:
@@ -253,9 +252,7 @@ async def configure_energy(log) -> bool:
                     existing = next((f for f in ff if f.get("stat_energy_from") == STAT_ENERGY), None)
                     if existing:
                         if existing.get("stat_cost") != STAT_COST:
-                            existing.update({"stat_cost": STAT_COST,
-                                             "entity_energy_price": None,
-                                             "number_energy_price": None})
+                            existing["stat_cost"] = STAT_COST
                             changed = True
                     elif not ff:
                         ff.append(ours)
