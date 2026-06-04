@@ -23,6 +23,10 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+          # 'brands' requires the `teco` domain to be added to home-assistant/brands
+          # (a separate PR); it only gates HACS *default-store* inclusion, not custom-repo
+          # installs. Ignore it here so CI reflects what we can control.
+          ignore: brands
 
   python:
     name: Python compile + lint
