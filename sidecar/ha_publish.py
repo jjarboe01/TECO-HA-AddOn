@@ -217,6 +217,62 @@ async def publish(data: dict, log) -> None:
             log.exception("sensor update failed")
 
 
+async def configure_energy(log) -> None:
+    """Attach teco:energy_cost to the teco:energy_consumption grid source in the HA
+    Energy Dashboard, so it shows $ alongside kWh. Non-destructive:
+      - if our consumption stat is already a grid source -> just set its cost stat
+      - else if no grid consumption is configured yet -> add ours (+cost)
+      - else (the user already has a different grid source) -> leave it alone
+    """
+    if not available():
+        return
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.ws_connect(CORE_WS, heartbeat=30) as ws:
+                await ws.receive_json()  # auth_required
+                await ws.send_json({"type": "auth", "access_token": SUPERVISOR_TOKEN})
+                if (await ws.receive_json()).get("type") != "auth_ok":
+                    return
+                await ws.send_json({"id": 1, "type": "energy/get_prefs"})
+                resp = await ws.receive_json()
+                prefs = resp.get("result") or {}
+                sources = prefs.get("energy_sources", [])
+                ours = {"stat_energy_from": STAT_ENERGY, "stat_cost": STAT_COST,
+                        "entity_energy_price": None, "number_energy_price": None}
+                grid = next((x for x in sources if x.get("type") == "grid"), None)
+                changed = False
+                if grid is None:
+                    sources.append({"type": "grid", "flow_from": [ours], "flow_to": [],
+                                    "cost_adjustment_day": 0.0})
+                    changed = True
+                else:
+                    ff = grid.setdefault("flow_from", [])
+                    existing = next((f for f in ff if f.get("stat_energy_from") == STAT_ENERGY), None)
+                    if existing:
+                        if existing.get("stat_cost") != STAT_COST:
+                            existing.update({"stat_cost": STAT_COST,
+                                             "entity_energy_price": None,
+                                             "number_energy_price": None})
+                            changed = True
+                    elif not ff:
+                        ff.append(ours)
+                        changed = True
+                    else:
+                        log.info("energy: existing grid source found; leaving it alone "
+                                 "(add 'teco:energy_consumption' manually if you want TECO instead)")
+                if changed:
+                    prefs["energy_sources"] = sources
+                    prefs.setdefault("device_consumption", prefs.get("device_consumption", []))
+                    await ws.send_json({"id": 2, "type": "energy/save_prefs", **prefs})
+                    ok = (await ws.receive_json()).get("success")
+                    log.info("energy dashboard %s with TECO consumption + cost",
+                             "configured" if ok else "save FAILED")
+                else:
+                    log.info("energy dashboard already has TECO cost wired")
+    except Exception:  # noqa: BLE001
+        log.exception("configure_energy failed")
+
+
 async def publish_sensors(data: dict, log) -> None:
     """Re-post only the sensor states (cheap heartbeat — keeps entities alive and
     recovers them quickly after an HA restart). No statistics, no TECO fetch."""

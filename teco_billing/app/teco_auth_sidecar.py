@@ -63,6 +63,7 @@ SESSION_TTL = int(os.environ.get("SESSION_TTL_MIN", "30")) * 60
 BACKFILL_BILLS = int(os.environ.get("BACKFILL_BILLS", "36"))
 POLL_INTERVAL = max(1, int(os.environ.get("POLL_INTERVAL_HOURS", "6"))) * 3600
 SENSOR_REFRESH = max(1, int(os.environ.get("SENSOR_REFRESH_MIN", "5"))) * 60
+SETUP_ENERGY = os.environ.get("SETUP_ENERGY_DASHBOARD", "1") != "0"
 HEADLESS = os.environ.get("HEADLESS", "1") != "0"
 TOKEN = os.environ.get("SIDECAR_TOKEN")
 CACHE_DIR = os.environ.get("CACHE_DIR", os.path.join(os.path.dirname(__file__), "cache"))
@@ -376,6 +377,7 @@ async def _poll_loop():
     a few minutes of an HA restart, without hitting TECO more often.
     """
     last_fetch = 0.0
+    energy_configured = False
     while True:
         try:
             now = time.time()
@@ -384,6 +386,9 @@ async def _poll_loop():
                 last_fetch = now
                 if ha_publish.available():
                     await ha_publish.publish(data, LOG)     # statistics + sensors
+                    if SETUP_ENERGY and not energy_configured:
+                        await ha_publish.configure_energy(LOG)   # wire Energy Dashboard once
+                        energy_configured = True
                 else:
                     LOG.info("refreshed (%d bills); HA publish skipped (no SUPERVISOR_TOKEN)",
                              data.get("counts", {}).get("archived_bills", 0))

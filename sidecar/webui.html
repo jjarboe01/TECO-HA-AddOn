@@ -135,7 +135,14 @@ function bars(el, axisEl, items, valFn, labelFn, cls, tipFn){
   };
   el.onmouseleave = hideTip;
   if(items.length){
-    axisEl.innerHTML = `<span>${labelFn(items[0])}</span><span>max ${fmtN(max,cls==='cost'?2:0)}</span><span>${labelFn(items[items.length-1])}</span>`;
+    const d = cls==='cost'?2:0;
+    const nums = items.map(it=>valFn(it)).filter(v=>v!=null && v>0);  // ignore empty/partial periods
+    const min = nums.length ? Math.min(...nums) : 0;
+    const avg = nums.length ? nums.reduce((a,b)=>a+b,0)/nums.length : 0;
+    axisEl.innerHTML =
+      `<span>${labelFn(items[0])}</span>` +
+      `<span>min ${fmtN(min,d)} · avg ${fmtN(avg,d)} · max ${fmtN(max,d)}</span>` +
+      `<span>${labelFn(items[items.length-1])}</span>`;
   }
 }
 

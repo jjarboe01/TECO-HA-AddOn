@@ -40,8 +40,10 @@ The add-on talks to the HA Core API directly (`homeassistant_api: true`) — no 
 no MQTT:
 
 - **Energy Dashboard** — daily **kWh** (`teco:energy_consumption`) and daily **cost**
-  (`teco:energy_cost`) long-term statistics via `recorder/import_statistics`. Add
-  them under **Settings → Dashboards → Energy**.
+  (`teco:energy_cost`) long-term statistics via `recorder/import_statistics`. On first
+  run it **auto-wires** TECO as your grid source with the cost attached, so the
+  dashboard shows **$ alongside kWh** with no manual setup (non-destructive — it won't
+  touch an existing grid source; disable with the `setup_energy_dashboard` option).
 - **Sensors** — `sensor.teco_amount_due`, `sensor.teco_last_bill_cost`,
   `sensor.teco_last_bill_rate` ($/kWh), `sensor.teco_service_period_start` / `_end`,
   `sensor.teco_service_days`, `sensor.teco_account_status`, plus

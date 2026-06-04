@@ -10,6 +10,7 @@ export TECO_PASS="$(get teco_pass '')"
 export BACKFILL_BILLS="$(get backfill_bills 36)"
 export POLL_INTERVAL_HOURS="$(get poll_interval_hours 6)"
 export SENSOR_REFRESH_MIN="$(get sensor_refresh_min 5)"
+export SETUP_ENERGY_DASHBOARD="$(get setup_energy_dashboard True | sed 's/True/1/;s/False/0/')"
 export SESSION_TTL_MIN="$(get session_ttl_min 30)"
 export CACHE_DIR="/data/cache"          # persistent + never purged
 # optional token: protects the exposed API port. Ingress (the panel) is exempt.
