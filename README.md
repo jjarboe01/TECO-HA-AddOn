@@ -1,5 +1,10 @@
 # TECO ↔ Home Assistant
 
+[![Validate](https://github.com/jjarboe01/TECO-HA-AddOn/actions/workflows/validate.yml/badge.svg)](https://github.com/jjarboe01/TECO-HA-AddOn/actions/workflows/validate.yml)
+[![hacs](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fjjarboe01%2FTECO-HA-AddOn)
+
 Bring **Tampa Electric (TECO)** billing, usage, cost, and service-period data into
 Home Assistant — including the **Energy Dashboard** at **daily** resolution, a
 **persistent multi-year bill archive**, and a sidebar **billing dashboard**.

@@ -16,6 +16,10 @@ bill — so your history grows past TECO's ~3-year window.
    - **session_ttl_min** — re-login interval (default 30)
 4. **Start** the add-on, then open it from the **TECO Billing** sidebar panel.
 
+> **Changing your credentials?** The add-on reads `teco_user` / `teco_pass` from
+> `/data/options.json` only at startup. After editing them on the Configuration
+> tab, **restart the add-on** for the change to take effect.
+
 The first start backfills all bills and can take a few minutes; later refreshes
 are incremental (only new bills are fetched).
 

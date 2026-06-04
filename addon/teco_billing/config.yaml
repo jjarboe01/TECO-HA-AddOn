@@ -6,7 +6,7 @@ description: >-
   Home Assistant and serves a billing dashboard. Logs into account.tecoenergy.com
   in a headless browser (handles reCAPTCHA v3 + Cloudflare) and keeps a persistent,
   never-purged archive of every bill.
-url: https://github.com/yourname/teco-homeassistant
+url: https://github.com/jjarboe01/TECO-HA-AddOn
 arch:
   - amd64
   - aarch64
