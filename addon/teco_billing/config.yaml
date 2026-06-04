@@ -12,8 +12,6 @@ arch:
   - amd64
   - aarch64
 init: false
-startup: application
-boot: auto
 
 # Talk to the HA Core API (push Energy Dashboard statistics + create sensor entities)
 homeassistant_api: true
