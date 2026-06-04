@@ -35,6 +35,19 @@ are incremental (only new bills are fetched).
 `service_period_start/end`, `service_days`, `kwh_used`, `cost`, `cost_per_kwh`,
 `previous_reading`, `current_reading`, `meter_number`, plus actual **daily kWh**.
 
+## What it pushes into Home Assistant
+The add-on talks to the HA Core API directly (`homeassistant_api: true`) — no HACS,
+no MQTT:
+
+- **Energy Dashboard** — daily **kWh** (`teco:energy_consumption`) and daily **cost**
+  (`teco:energy_cost`) long-term statistics via `recorder/import_statistics`. Add
+  them under **Settings → Dashboards → Energy**.
+- **Sensors** — `sensor.teco_amount_due`, `sensor.teco_last_bill_cost`,
+  `sensor.teco_last_bill_rate` ($/kWh), `sensor.teco_service_period_start` / `_end`,
+  `sensor.teco_service_days`, `sensor.teco_account_status`, plus
+  `binary_sensor.teco_paperless` / `_autopay` / `_budget_billing` / etc., refreshed
+  each poll via the REST states API.
+
 ## Notes
 - **Run on your LAN.** reCAPTCHA v3 scores datacenter IPs harshly; Home Assistant
   on your home network logs in reliably.

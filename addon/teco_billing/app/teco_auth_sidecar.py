@@ -41,13 +41,12 @@ import sys
 import time
 from datetime import datetime, timezone
 
-# verified parsers/models (vendored next to this file in the image)
+# verified parsers/models (siblings in this folder; vendored together into the image)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "custom_components", "teco"))
 import parsers   # noqa: E402
 import ibill     # noqa: E402
 import models    # noqa: E402
+import ha_publish  # noqa: E402
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page  # noqa: E402
 
@@ -62,6 +61,7 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 
 SESSION_TTL = int(os.environ.get("SESSION_TTL_MIN", "30")) * 60
 BACKFILL_BILLS = int(os.environ.get("BACKFILL_BILLS", "36"))
+POLL_INTERVAL = max(1, int(os.environ.get("POLL_INTERVAL_HOURS", "6"))) * 3600
 HEADLESS = os.environ.get("HEADLESS", "1") != "0"
 TOKEN = os.environ.get("SIDECAR_TOKEN")
 CACHE_DIR = os.environ.get("CACHE_DIR", os.path.join(os.path.dirname(__file__), "cache"))
@@ -363,11 +363,37 @@ def _inid_from_url(url: str) -> str | None:
 # --------------------------------------------------------------------------- #
 session = TecoSession()
 
+
+async def _poll_loop():
+    """Periodically refresh from TECO and publish to Home Assistant (add-on mode)."""
+    while True:
+        try:
+            data = await session.fetch_all()
+            if ha_publish.available():
+                await ha_publish.publish(data, LOG)
+            else:
+                LOG.info("refreshed (%d bills); HA publish skipped (no SUPERVISOR_TOKEN)",
+                         data.get("counts", {}).get("archived_bills", 0))
+        except Exception:  # noqa: BLE001
+            LOG.exception("poll cycle failed")
+        await asyncio.sleep(POLL_INTERVAL)
+
 try:
+    from contextlib import asynccontextmanager
+
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
     from fastapi.responses import JSONResponse, HTMLResponse
 
-    app = FastAPI(title="TECO auth+data sidecar", version="0.3.0")
+    @asynccontextmanager
+    async def lifespan(app):
+        task = asyncio.create_task(_poll_loop())
+        try:
+            yield
+        finally:
+            task.cancel()
+            await session.close()
+
+    app = FastAPI(title="TECO auth+data sidecar", version="0.4.0", lifespan=lifespan)
 
     _UI_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui.html")
 
@@ -445,10 +471,6 @@ try:
                             headers={"Content-Disposition":
                                      "attachment; filename=teco_bills.csv"})
         return JSONResponse(data)
-
-    @app.on_event("shutdown")
-    async def _shutdown():
-        await session.close()
 except ImportError:
     app = None  # FastAPI not installed (e.g. --once smoke test in a minimal env)
 

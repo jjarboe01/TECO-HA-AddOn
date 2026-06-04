@@ -8,7 +8,7 @@ COPY sidecar/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # vendor the verified parsers/models next to the app (kept DRY with the HA component in source)
-COPY custom_components/teco/parsers.py custom_components/teco/models.py custom_components/teco/ibill.py ./
+COPY sidecar/parsers.py sidecar/models.py sidecar/ibill.py ./
 COPY sidecar/teco_auth_sidecar.py sidecar/webui.html ./
 
 ENV HEADLESS=1 \

@@ -15,7 +15,7 @@ import sys
 
 # import the parser module directly (no HA package context needed)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, "custom_components", "teco"))
+sys.path.insert(0, os.path.join(ROOT, "sidecar"))
 
 import parsers  # noqa: E402
 

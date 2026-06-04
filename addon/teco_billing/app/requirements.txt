@@ -2,3 +2,4 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 playwright>=1.43
 beautifulsoup4>=4.12
+aiohttp>=3.9

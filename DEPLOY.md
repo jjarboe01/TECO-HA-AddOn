@@ -1,111 +1,98 @@
-# Deployment runbook — TECO ↔ Home Assistant (homelab)
+# Deployment runbook — TECO Billing add-on (homelab)
 
-Three ways to deploy, from one engine. Pick **A (add-on)** for the simplest path on
-a Home Assistant OS / Supervised install; **B (Docker)** if you'd rather run the
-sidecar on another homelab host; both can pair with **C (HACS integration)** for
-sensors + the Energy Dashboard.
+The product is a single **Home Assistant add-on**. It runs the headless-browser
+engine, pushes data into Home Assistant itself (Energy Dashboard + sensors), and
+serves a sidebar dashboard. A standalone Docker option is included for non-HA hosts.
 
-> ⚠️ **Run the sidecar on your LAN.** reCAPTCHA v3 scores datacenter IPs harshly.
-> A residential egress IP (your homelab) logs in reliably; a cloud VM may get blocked.
+> ⚠️ **Run on your LAN.** reCAPTCHA v3 scores datacenter IPs harshly. Home Assistant
+> on your home network logs in reliably; a cloud VM may get blocked.
 
 ---
 
-## A. Home Assistant add-on (recommended)
+## A. Install the add-on
 
-### A1. Install as a local add-on
-1. Get the add-on folder onto HA (via the **Samba share** or **SSH/Advanced Terminal**
-   add-on): copy `addon/teco_billing/` to the HA `/addons/` directory so you have
-   `/addons/teco_billing/config.yaml`.
+### A1. Local add-on
+1. Copy the add-on folder onto HA (via the **Samba** or **SSH/Advanced Terminal**
+   add-on) so you have `/addons/teco_billing/config.yaml`:
    ```bash
-   # from this repo, e.g. over scp/rsync to the HA host's /addons share:
    rsync -a addon/teco_billing/ root@<ha-host>:/addons/teco_billing/
    ```
-2. **Settings → Add-ons → Add-on Store → ⋮ (top-right) → Check for updates.**
-   "TECO Billing" appears under **Local add-ons**.
-3. Open it → **Install** (first build pulls the Playwright base image — a few hundred MB,
-   one time).
+2. **Settings → Add-ons → Add-on Store → ⋮ → Check for updates.** "TECO Billing"
+   appears under **Local add-ons** → open it → **Install** (first build pulls the
+   Playwright base image, a few hundred MB, one time).
 
-### A2. (Alternative) install from a Git repo
+### A2. (Alternative) from a Git repo
 The add-on store expects `repository.yaml` + the add-on folder at the **repo root**.
-If you publish this, make a repo whose root contains `repository.yaml` and
-`teco_billing/` (i.e. the contents of `addon/`). Then **Add-on Store → ⋮ → Repositories**
-and paste the repo URL.
+To use this route, publish a repo whose root contains `repository.yaml` and
+`teco_billing/` (the contents of `addon/`), then **Add-on Store → ⋮ → Repositories**
+and paste the URL. (You can also click the "Add repository to my Home Assistant"
+badge in the README.)
 
 ### A3. Configure & start
-1. Open the add-on → **Configuration** tab:
-   - **teco_user** / **teco_pass** — your TECO portal login
-   - **auth_token** — optional; set it if you'll expose the API port (see C). Leave blank
-     to keep the panel ingress-only.
-   - **backfill_bills** (36 ≈ 3 yrs), **session_ttl_min** (30)
-2. **Start**. Watch the **Log** tab: you should see `login OK` then `fetching bill …`.
-   The first backfill takes a few minutes; later refreshes are incremental.
-3. Open the **TECO Billing** panel in the sidebar — the billing dashboard.
+**Configuration** tab:
+- **teco_user** / **teco_pass** — your TECO portal login
+- **backfill_bills** — bills to pull on first run (default 36 ≈ 3 years)
+- **poll_interval_hours** — how often to refresh + push to HA (default 6)
+- **session_ttl_min** — re-login interval (default 30)
+- **auth_token** — only needed if you expose the optional API port (see C)
 
-The bill archive persists in the add-on's `/data/cache` and is **never purged**.
-**Back up the add-on** to preserve >3 years of history.
+**Start**, then watch the **Log** tab: `login OK` → `fetching bill …` → on the first
+cycle, `import_statistics teco:energy_consumption: ok` and `updated N TECO sensor
+entities`. The first backfill takes a few minutes; later polls are incremental.
+
+> **Changing credentials?** The add-on reads them at startup — **restart** the add-on
+> after editing them on the Configuration tab.
 
 ---
 
-## B. Docker container (other homelab host / Portainer)
+## B. What shows up in Home Assistant
+- **Sidebar → TECO Billing** — the dashboard (bills, service periods, kWh, cost,
+  $/kWh, meter reads; charts; CSV export; per-bill re-assemble).
+- **Settings → Devices & Services → Entities** — `sensor.teco_amount_due`,
+  `sensor.teco_last_bill_cost`, `sensor.teco_last_bill_rate` ($/kWh),
+  `sensor.teco_service_period_start` / `_end`, `sensor.teco_account_status`,
+  `binary_sensor.teco_paperless`, `…_autopay`, etc.
+- **Settings → Dashboards → Energy → Add consumption** — pick the **TECO Energy**
+  statistic (`teco:energy_consumption`). A `teco:energy_cost` statistic is also
+  imported. External statistics can take a few hours to first appear; check
+  **Developer Tools → Statistics**.
+
+> REST-state sensors repopulate on each poll, so right after an HA restart they may
+> read `unavailable` until the next cycle (or an add-on restart). The Energy
+> Dashboard statistics are persistent and unaffected.
+
+---
+
+## C. Standalone Docker (non-HA host)
+Runs the dashboard + JSON API only (no HA push, since there's no Supervisor):
 ```bash
 cd sidecar
-cp .env.example .env          # set TECO_USER / TECO_PASS (and SIDECAR_TOKEN if exposing)
+cp .env.example .env          # TECO_USER / TECO_PASS (+ SIDECAR_TOKEN to lock the API)
 docker compose up -d --build
 docker compose logs -f        # watch for "login OK"
 ```
-- UI: `http://<host>:8089/`
-- API: `/data`, `/export?format=csv`, `/bills`, `POST /reassemble?invoice_id=…`
-- Archive persists on the `teco_archive` Docker volume — **back it up**.
-
----
-
-## C. HACS integration (sensors + Energy Dashboard)
-The integration is a thin client that polls the add-on/sidecar — no browser in HA.
-
-1. **HACS → ⋮ → Custom repositories** → add this repo, category **Integration** → install
-   **TECO (Tampa Electric)**. Restart HA.
-2. **Settings → Devices & Services → Add Integration → "TECO (Tampa Electric)"**.
-3. **Sidecar URL:**
-   - Add-on with the port exposed (default): `http://<HA-host-IP>:8089`
-   - Docker host: `http://<docker-host-IP>:8089`
-   - **Auth token:** only if you set `auth_token` / `SIDECAR_TOKEN`.
-4. Entities appear under one **TECO (Tampa Electric)** device: amount due, due date,
-   last bill cost/usage/**$ per kWh**, service period start/end/days, account status,
-   and program binary sensors.
-
-### Energy Dashboard
-1. **Settings → Dashboards → Energy → Add consumption.**
-2. Pick the **TECO Energy** statistic (`teco:energy_consumption`) as a grid source.
-   (External statistics can take a few hours to first appear; check
-   **Developer Tools → Statistics** for `teco:energy_consumption` and `teco:energy_cost`.)
-3. Cost: a parallel `teco:energy_cost` statistic is published (daily, distributed from
-   each bill). Note HA's built-in cost UI is limited for *external* statistics — view the
-   cost statistic directly, or pair energy with a fixed price if you prefer.
+UI at `http://<host>:8089/`; archive persists on the `teco_archive` volume — back it up.
 
 ---
 
 ## Verify
 ```bash
-# add-on/docker reachable & logged in:
-curl http://<host>:8089/health
-# how many bills are archived (no network call):
-curl http://<host>:8089/bills | jq '.archived_bills'
-# full export:
-curl "http://<host>:8089/export?format=csv" -o teco_bills.csv
+# add-on log shows: login OK, import_statistics ... ok, updated N TECO sensor entities
+# in HA: Developer Tools → Statistics → search "teco"
+# in HA: Developer Tools → States → filter "teco"
 ```
-In HA: the **TECO Billing** sidebar panel renders the dashboard; the **TECO** device
-lists sensors; `teco:energy_consumption` shows in Developer Tools → Statistics.
 
 ## Troubleshoot
 | Symptom | Fix |
 |---|---|
-| `login failed (reCAPTCHA score or bad credentials)` | Run on your LAN (not a cloud IP); double-check user/pass on the Configuration tab. |
-| Panel/UI loads but empty | First backfill still running — watch the add-on Log; or click **Refresh from TECO**. |
-| Integration "cannot connect" | Wrong URL/port, or `auth_token` set but not entered in the integration. `curl /health` from the HA host. |
-| Energy Dashboard shows nothing yet | External statistics can lag a few hours; confirm the statistic exists in Developer Tools → Statistics. |
+| `login failed (reCAPTCHA score or bad credentials)` | Run on your LAN (not a cloud IP); recheck user/pass on the Configuration tab; restart after changes. |
+| Panel loads but empty | First backfill still running — watch the add-on Log, or click **Refresh from TECO**. |
+| No sensors / no Energy stat | Confirm `homeassistant_api: true` is in the add-on (it is by default); check the Log for `import_statistics`/`updated … entities`; stats can lag a few hours. |
+| Sensors show `unavailable` after restart | Expected for REST-state sensors until the next poll; trigger a restart or wait for the cycle. |
 | First build is slow / large | Expected — the Playwright base image bundles Chromium (one-time). |
 
 ## Maintenance
-- After editing the sidecar or parsers, re-vendor the add-on app: `./addon/sync.sh`.
-- The archive is append-only; to force-refresh one bill use the panel's ↻ button or
-  `POST /reassemble?invoice_id=<id>`. To rebuild everything: `GET /data?force=true`.
+- After editing the engine/parsers in `sidecar/`, re-vendor the add-on: `./addon/sync.sh`.
+- Force-refresh one bill from the panel (↻) or `POST /reassemble?invoice_id=<id>`.
+  Rebuild everything: `GET /data?force=true`.
+- The archive is append-only and never purged; back up the add-on's `/data`.

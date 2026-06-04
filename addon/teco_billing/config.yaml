@@ -1,11 +1,12 @@
 name: TECO Billing
-version: "0.3.0"
+version: "0.4.0"
 slug: teco_billing
 description: >-
   Pulls Tampa Electric (TECO) billing, usage, cost and service-period data into
-  Home Assistant and serves a billing dashboard. Logs into account.tecoenergy.com
-  in a headless browser (handles reCAPTCHA v3 + Cloudflare) and keeps a persistent,
-  never-purged archive of every bill.
+  Home Assistant — feeds the Energy Dashboard (daily kWh + cost), creates sensors,
+  and serves a billing dashboard. Logs into account.tecoenergy.com in a headless
+  browser (handles reCAPTCHA v3 + Cloudflare) and keeps a persistent, never-purged
+  archive of every bill.
 url: https://github.com/jjarboe01/TECO-HA-AddOn
 arch:
   - amd64
@@ -14,21 +15,23 @@ init: false
 startup: application
 boot: auto
 
+# Talk to the HA Core API (push Energy Dashboard statistics + create sensor entities)
+homeassistant_api: true
+
 # --- side panel (ingress) -------------------------------------------------- #
 ingress: true
 ingress_port: 8089
 panel_icon: mdi:transmission-tower-export
 panel_title: TECO Billing
 
-# --- API port for the HACS integration ------------------------------------- #
-# Exposes /data etc. at http://<HA-host>:8089 so the custom_components/teco
-# integration can reach it. The dashboard panel stays ingress-only. If you set
-# auth_token below, the exposed port requires it (ingress is exempt). Set this
-# to null in the UI to keep the service ingress-only.
+# --- optional external API port -------------------------------------------- #
+# The add-on pushes data into HA itself, so this isn't needed for normal use.
+# Exposed only for power users who want to hit /data, /export, etc. directly.
+# Protected by auth_token if set (ingress is always exempt). Set to null to disable.
 ports:
   8089/tcp: 8089
 ports_description:
-  8089/tcp: TECO sidecar API (for the HACS integration)
+  8089/tcp: TECO sidecar API (optional; the add-on pushes to HA on its own)
 
 # --- persistent archive ---------------------------------------------------- #
 # Add-ons get a persistent /data dir automatically; the bill cache lives in
@@ -40,6 +43,7 @@ options:
   teco_pass: ""
   auth_token: ""
   backfill_bills: 36
+  poll_interval_hours: 6
   session_ttl_min: 30
   log_level: info
 schema:
@@ -47,5 +51,6 @@ schema:
   teco_pass: password
   auth_token: password?
   backfill_bills: int(1,120)
+  poll_interval_hours: int(1,24)
   session_ttl_min: int(5,240)
   log_level: list(trace|debug|info|warning|error)

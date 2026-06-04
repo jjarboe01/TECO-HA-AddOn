@@ -7,7 +7,7 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, "custom_components", "teco"))
+sys.path.insert(0, os.path.join(ROOT, "sidecar"))
 
 import ibill  # noqa: E402
 
