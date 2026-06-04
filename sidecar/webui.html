@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TECO Billing</title>
+<style>
+  :root { --bg:#0f1620; --card:#16202c; --ink:#e8eef5; --muted:#9fb0c0;
+          --accent:#2f8fd6; --accent2:#f0a83a; --line:#26333f; --good:#3ec46d; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+         background:var(--bg); color:var(--ink); }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); display:flex;
+           align-items:center; gap:14px; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; font-weight:600; }
+  header .sub { color:var(--muted); font-size:12px; }
+  .spacer { flex:1; }
+  button, a.btn { background:var(--accent); color:#fff; border:0; border-radius:7px;
+          padding:8px 13px; font-size:13px; cursor:pointer; text-decoration:none; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--ink); }
+  main { padding:20px; max-width:1200px; margin:0 auto; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .card .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .v { font-size:22px; font-weight:600; margin-top:4px; }
+  .card .v small { font-size:12px; color:var(--muted); font-weight:400; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:18px; }
+  section h2 { font-size:14px; margin:0 0 12px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:right; padding:7px 9px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:600; cursor:pointer; user-select:none; }
+  tr:hover td { background:rgba(255,255,255,.02); }
+  .bars { display:flex; align-items:flex-end; gap:3px; height:120px; }
+  .bar { flex:1; background:var(--accent); border-radius:3px 3px 0 0; min-width:2px; position:relative; }
+  .bar.cost { background:var(--accent2); }
+  .axis { display:flex; justify-content:space-between; color:var(--muted); font-size:11px; margin-top:6px; }
+  .muted { color:var(--muted); }
+  .loading { padding:40px; text-align:center; color:var(--muted); }
+  .err { color:#ff6b6b; }
+  .row { display:flex; gap:18px; flex-wrap:wrap; } .row > section { flex:1; min-width:300px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ TECO Billing</h1>
+  <span class="sub" id="acct"></span>
+  <div class="spacer"></div>
+  <a class="btn ghost" id="csv" href="export?format=csv">Export CSV</a>
+  <button class="ghost" id="reload">Reload archive</button>
+  <button id="refresh">Refresh from TECO</button>
+</header>
+<main>
+  <div id="status" class="loading">Loading archive…</div>
+  <div id="content" style="display:none">
+    <div class="cards" id="cards"></div>
+    <div class="row">
+      <section><h2>Usage per bill (kWh)</h2><div class="bars" id="kwhBars"></div><div class="axis" id="kwhAxis"></div></section>
+      <section><h2>Cost per bill ($)</h2><div class="bars" id="costBars"></div><div class="axis" id="costAxis"></div></section>
+    </div>
+    <section><h2>Daily usage (kWh) — most recent 90 days</h2><div class="bars" id="dailyBars"></div><div class="axis" id="dailyAxis"></div></section>
+    <section>
+      <h2>All bills <span class="muted" id="billCount"></span></h2>
+      <div style="overflow:auto">
+      <table id="billsTbl">
+        <thead><tr>
+          <th data-k="bill_date">Bill date</th>
+          <th data-k="service_period_start">Service start</th>
+          <th data-k="service_period_end">Service end</th>
+          <th data-k="service_days">Days</th>
+          <th data-k="kwh_used">kWh</th>
+          <th data-k="cost">Cost</th>
+          <th data-k="cost_per_kwh">$/kWh</th>
+          <th data-k="previous_reading">Prev read</th>
+          <th data-k="current_reading">Cur read</th>
+          <th>Re-assemble</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      </div>
+    </section>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const fmtN = (n,d=0) => n==null ? "—" : Number(n).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
+const money = n => n==null ? "—" : "$"+fmtN(n,2);
+let DATA = null, sortKey="service_period_end", sortDir=-1;
+
+async function load(url, label){
+  $("#status").style.display="block"; $("#content").style.display="none";
+  $("#status").className="loading"; $("#status").textContent = label;
+  try{
+    const r = await fetch(url);
+    if(!r.ok) throw new Error("HTTP "+r.status+" — "+(await r.text()).slice(0,200));
+    DATA = await r.json();
+    render();
+  }catch(e){
+    $("#status").className="loading err";
+    $("#status").textContent = "Error: "+e.message;
+  }
+}
+
+function bars(el, axisEl, items, valFn, labelFn, cls){
+  const max = Math.max(1, ...items.map(valFn));
+  el.innerHTML = items.map(it=>{
+    const v = valFn(it)||0;
+    return `<div class="bar ${cls||''}" style="height:${(v/max*100).toFixed(1)}%" title="${labelFn(it)}: ${fmtN(v, cls==='cost'?2:0)}"></div>`;
+  }).join("");
+  if(items.length){
+    axisEl.innerHTML = `<span>${labelFn(items[0])}</span><span>max ${fmtN(max,cls==='cost'?2:0)}</span><span>${labelFn(items[items.length-1])}</span>`;
+  }
+}
+
+function render(){
+  const bills = (DATA.bills||[]).slice();
+  const daily = (DATA.daily_usage||[]).slice();
+  $("#acct").textContent = `${DATA.archived_bills ?? bills.length} bills archived` +
+     (DATA.exported_at? ` · exported ${new Date(DATA.exported_at).toLocaleString()}`:"")+
+     (DATA.fetched_at? ` · refreshed ${new Date(DATA.fetched_at).toLocaleString()}`:"");
+
+  // KPI cards from the most recent bill + averages
+  const byEnd = bills.slice().sort((a,b)=>(a.service_period_end||"").localeCompare(b.service_period_end||""));
+  const last = byEnd[byEnd.length-1] || {};
+  const totKwh = bills.reduce((s,b)=>s+(b.kwh_used||0),0);
+  const totCost = bills.reduce((s,b)=>s+(b.cost||0),0);
+  const avgCpk = totKwh? totCost/totKwh : null;
+  $("#cards").innerHTML = `
+    <div class="card"><div class="k">Latest bill</div><div class="v">${money(last.cost)}</div><div class="muted">${last.label||"—"}</div></div>
+    <div class="card"><div class="k">Latest usage</div><div class="v">${fmtN(last.kwh_used)} <small>kWh</small></div><div class="muted">${last.service_period_start||"?"} → ${last.service_period_end||"?"}</div></div>
+    <div class="card"><div class="k">Latest $/kWh</div><div class="v">${last.cost_per_kwh!=null?"$"+fmtN(last.cost_per_kwh,4):"—"}</div></div>
+    <div class="card"><div class="k">Avg $/kWh (all)</div><div class="v">${avgCpk!=null?"$"+fmtN(avgCpk,4):"—"}</div></div>
+    <div class="card"><div class="k">Total archived</div><div class="v">${fmtN(totKwh)} <small>kWh</small></div><div class="muted">${money(totCost)}</div></div>`;
+
+  bars($("#kwhBars"), $("#kwhAxis"), byEnd, b=>b.kwh_used, b=>b.service_period_end||b.label||"");
+  bars($("#costBars"), $("#costAxis"), byEnd, b=>b.cost, b=>b.service_period_end||b.label||"", "cost");
+  const d90 = daily.slice(-90);
+  bars($("#dailyBars"), $("#dailyAxis"), d90, d=>d.kwh, d=>d.date||"");
+
+  renderTable(bills);
+  $("#status").style.display="none"; $("#content").style.display="block";
+}
+
+function renderTable(bills){
+  bills.sort((a,b)=>{
+    const x=a[sortKey], y=b[sortKey];
+    if(x==null) return 1; if(y==null) return -1;
+    return (x>y?1:x<y?-1:0)*sortDir;
+  });
+  $("#billCount").textContent = `(${bills.length})`;
+  $("#billsTbl tbody").innerHTML = bills.map(b=>`
+    <tr>
+      <td>${b.bill_date||b.label||"—"}</td>
+      <td>${b.service_period_start||"—"}</td>
+      <td>${b.service_period_end||"—"}</td>
+      <td>${b.service_days??"—"}</td>
+      <td>${fmtN(b.kwh_used)}</td>
+      <td>${money(b.cost)}</td>
+      <td>${b.cost_per_kwh!=null?"$"+fmtN(b.cost_per_kwh,4):"—"}</td>
+      <td>${fmtN(b.previous_reading)}</td>
+      <td>${fmtN(b.current_reading)}</td>
+      <td><button class="ghost re" data-id="${b.invoice_id||""}" style="padding:4px 9px">↻</button></td>
+    </tr>`).join("");
+  document.querySelectorAll(".re").forEach(btn=>btn.onclick=async()=>{
+    const id=btn.dataset.id; if(!id) return;
+    btn.textContent="…";
+    try{ await fetch("reassemble?invoice_id="+encodeURIComponent(id),{method:"POST"});
+         await load("export","Reloading archive…"); }
+    catch(e){ btn.textContent="!"; }
+  });
+}
+
+document.querySelectorAll("#billsTbl th[data-k]").forEach(th=>th.onclick=()=>{
+  const k=th.dataset.k; sortDir = (sortKey===k? -sortDir : -1); sortKey=k; renderTable(DATA.bills||[]);
+});
+$("#reload").onclick=()=>load("export","Reloading archive…");
+$("#refresh").onclick=()=>load("data","Refreshing from TECO (first run can take a few minutes)…");
+load("export","Loading archive…");
+</script>
+</body>
+</html>

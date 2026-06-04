@@ -1,0 +1,244 @@
+# NOTE: Community-reconstructed spec from APIs.io (provider "api-evangelist" / Kin Lane).
+# NOT an official TECO contract. Endpoints/auth/schemas are a DESIGN REFERENCE only,
+# unverified against developer.tecoenergy.com. Replace with the real OpenAPI if/when a
+# subscribable product appears in the Azure APIM developer portal.
+# Source: https://apis.apis.io/apis/teco-energy/account-api/
+openapi: 3.0.3
+info:
+  title: Tampa Electric Account API
+  description: >-
+    The Tampa Electric Account API provides programmatic access to customer
+    account management capabilities including billing, energy usage history,
+    payment processing, service requests, and energy efficiency programs.
+  version: 1.0.0
+  contact:
+    url: https://developer.tecoenergy.com/
+  license:
+    name: Proprietary
+    url: https://www.tecoenergy.com/
+servers:
+  - url: https://api.tecoenergy.com/v1
+    description: Tampa Electric API - Production (UNVERIFIED)
+paths:
+  /accounts/{accountNumber}:
+    get:
+      operationId: getAccount
+      summary: Get Account Details
+      tags: [Accounts]
+      parameters:
+        - name: accountNumber
+          in: path
+          required: true
+          schema: {type: string}
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: Account details.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Account'}
+        '401': {description: Unauthorized.}
+        '404': {description: Account not found.}
+  /accounts/{accountNumber}/usage:
+    get:
+      operationId: getUsageHistory
+      summary: Get Energy Usage History
+      tags: [Energy Usage]
+      parameters:
+        - {name: accountNumber, in: path, required: true, schema: {type: string}}
+        - {name: startDate, in: query, required: false, schema: {type: string, format: date}}
+        - {name: endDate, in: query, required: false, schema: {type: string, format: date}}
+        - name: interval
+          in: query
+          required: false
+          schema: {type: string, enum: [hourly, daily, monthly], default: daily}
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: Energy usage history.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accountNumber: {type: string}
+                  unit: {type: string, description: Unit of measurement (kWh).}
+                  interval: {type: string}
+                  usageData:
+                    type: array
+                    items: {$ref: '#/components/schemas/UsageRecord'}
+        '401': {description: Unauthorized.}
+        '404': {description: Account not found.}
+  /accounts/{accountNumber}/bills:
+    get:
+      operationId: listBills
+      summary: List Bills
+      tags: [Billing]
+      parameters:
+        - {name: accountNumber, in: path, required: true, schema: {type: string}}
+        - {name: limit, in: query, required: false, schema: {type: integer, default: 12, maximum: 24}}
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: List of bills.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Bill'}
+        '401': {description: Unauthorized.}
+        '404': {description: Account not found.}
+  /accounts/{accountNumber}/bills/{billId}:
+    get:
+      operationId: getBill
+      summary: Get Bill Details
+      tags: [Billing]
+      parameters:
+        - {name: accountNumber, in: path, required: true, schema: {type: string}}
+        - {name: billId, in: path, required: true, schema: {type: string}}
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: Bill details.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Bill'}
+        '404': {description: Bill not found.}
+  /accounts/{accountNumber}/payments:
+    post:
+      operationId: makePayment
+      summary: Make Payment
+      tags: [Billing]
+      parameters:
+        - {name: accountNumber, in: path, required: true, schema: {type: string}}
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PaymentRequest'}
+      responses:
+        '201':
+          description: Payment submitted successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  confirmationNumber: {type: string}
+                  paymentDate: {type: string, format: date}
+                  amount: {type: number}
+                  status: {type: string}
+        '400': {description: Invalid payment data.}
+        '401': {description: Unauthorized.}
+  /accounts/{accountNumber}/service-requests:
+    get:
+      operationId: listServiceRequests
+      summary: List Service Requests
+      tags: [Service Requests]
+      parameters:
+        - {name: accountNumber, in: path, required: true, schema: {type: string}}
+        - name: status
+          in: query
+          required: false
+          schema: {type: string, enum: [open, in-progress, completed, cancelled]}
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: List of service requests.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/ServiceRequest'}
+    post:
+      operationId: createServiceRequest
+      summary: Create Service Request
+      tags: [Service Requests]
+      parameters:
+        - {name: accountNumber, in: path, required: true, schema: {type: string}}
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ServiceRequestCreate'}
+      responses:
+        '201':
+          description: Service request created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ServiceRequest'}
+        '400': {description: Invalid request data.}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+  schemas:
+    Account:
+      type: object
+      properties:
+        accountNumber: {type: string}
+        customerName: {type: string}
+        serviceAddress:
+          type: object
+          properties:
+            streetAddress: {type: string}
+            city: {type: string}
+            state: {type: string}
+            zipCode: {type: string}
+        accountType: {type: string, enum: [residential, commercial, industrial]}
+        serviceType: {type: string, enum: [electric, gas, electric-and-gas]}
+        status: {type: string, enum: [active, inactive, pending]}
+        currentBalance: {type: number, format: double}
+        dueDate: {type: string, format: date}
+        paperlessBilling: {type: boolean}
+    UsageRecord:
+      type: object
+      properties:
+        startTime: {type: string, format: date-time}
+        endTime: {type: string, format: date-time}
+        usage: {type: number, format: double, description: kWh during interval.}
+        cost: {type: number, format: double, description: Estimated USD cost.}
+        temperature: {type: number, format: double, description: Avg outdoor temp (F).}
+    Bill:
+      type: object
+      properties:
+        billId: {type: string}
+        billDate: {type: string, format: date}
+        dueDate: {type: string, format: date}
+        billingPeriodStart: {type: string, format: date}
+        billingPeriodEnd: {type: string, format: date}
+        totalAmount: {type: number, format: double}
+        kwhUsed: {type: number, format: double}
+        status: {type: string, enum: [unpaid, paid, overdue, partial]}
+        charges:
+          type: array
+          items:
+            type: object
+            properties:
+              description: {type: string}
+              amount: {type: number, format: double}
+    PaymentRequest:
+      type: object
+      required: [amount, paymentMethod]
+      properties:
+        amount: {type: number, format: double}
+        paymentMethod: {type: string, enum: [bank-account, credit-card, debit-card]}
+        paymentDate: {type: string, format: date}
+    ServiceRequest:
+      type: object
+      properties:
+        requestId: {type: string}
+        type: {type: string, enum: [start-service, stop-service, transfer-service, meter-read, tree-trimming, streetlight-repair, general-inquiry]}
+        status: {type: string, enum: [open, in-progress, completed, cancelled]}
+        createdDate: {type: string, format: date-time}
+        scheduledDate: {type: string, format: date}
+        completedDate: {type: string, format: date}
+        notes: {type: string}
+    ServiceRequestCreate:
+      type: object
+      required: [type]
+      properties:
+        type: {type: string, enum: [start-service, stop-service, transfer-service, meter-read, tree-trimming, streetlight-repair, general-inquiry]}
+        preferredDate: {type: string, format: date}
+        notes: {type: string}

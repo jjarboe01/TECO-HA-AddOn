@@ -1,0 +1,31 @@
+# Run the TECO sidecar next to Home Assistant.
+#   1. copy .env.example -> .env and fill in creds
+#   2. docker compose up -d --build
+#   3. point the HA integration at http://<docker-host>:8089
+services:
+  teco-sidecar:
+    build:
+      context: ..
+      dockerfile: sidecar/Dockerfile
+    container_name: teco-sidecar
+    environment:
+      TECO_USER: ${TECO_USER:?set in .env}
+      TECO_PASS: ${TECO_PASS:?set in .env}
+      SIDECAR_TOKEN: ${SIDECAR_TOKEN:-}
+      SESSION_TTL_MIN: ${SESSION_TTL_MIN:-30}
+      BACKFILL_BILLS: ${BACKFILL_BILLS:-36}
+      CACHE_DIR: /data
+      HEADLESS: "1"
+    ports:
+      - "8089:8089"
+    volumes:
+      # PERSISTENT ARCHIVE — never purged. Keeps every bill ever pulled, so your
+      # history grows past TECO's ~3-year window. Back this volume up.
+      - teco_archive:/data
+    restart: unless-stopped
+    # reCAPTCHA v3 scores datacenter IPs harshly. If logins start failing from a
+    # cloud host, run this on your LAN (homelab) where the egress IP looks residential.
+
+volumes:
+  teco_archive:
+    driver: local

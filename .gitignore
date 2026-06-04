@@ -1,0 +1,21 @@
+# Secrets & PII — never commit
+teco_session.json
+fixtures/
+sidecar/.env
+*.local
+*.pdf
+
+# runtime caches / archives (keep the code, not the data)
+cache/
+addon/teco_billing/app/cache/
+**/last_payload.json
+options.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS
+.DS_Store

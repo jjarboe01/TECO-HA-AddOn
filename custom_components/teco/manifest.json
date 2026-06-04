@@ -1,0 +1,12 @@
+{
+  "domain": "teco",
+  "name": "TECO (Tampa Electric)",
+  "version": "0.3.0",
+  "documentation": "https://github.com/yourname/teco-homeassistant",
+  "issue_tracker": "https://github.com/yourname/teco-homeassistant/issues",
+  "codeowners": ["@yourname"],
+  "config_flow": true,
+  "iot_class": "cloud_polling",
+  "integration_type": "hub",
+  "requirements": []
+}

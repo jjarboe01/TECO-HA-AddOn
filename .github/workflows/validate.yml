@@ -1,0 +1,40 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"   # weekly, catches upstream hassfest/HACS rule changes
+  workflow_dispatch:
+
+jobs:
+  hassfest:
+    name: hassfest (HA integration manifest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+
+  python:
+    name: Python compile + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tooling
+        run: pip install ruff
+      - name: Byte-compile all sources
+        run: python -m compileall -q custom_components sidecar addon/teco_billing/app
+      - name: Ruff (non-blocking style report)
+        run: ruff check custom_components sidecar || true

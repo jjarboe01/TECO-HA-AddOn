@@ -1,0 +1,51 @@
+name: TECO Billing
+version: "0.3.0"
+slug: teco_billing
+description: >-
+  Pulls Tampa Electric (TECO) billing, usage, cost and service-period data into
+  Home Assistant and serves a billing dashboard. Logs into account.tecoenergy.com
+  in a headless browser (handles reCAPTCHA v3 + Cloudflare) and keeps a persistent,
+  never-purged archive of every bill.
+url: https://github.com/yourname/teco-homeassistant
+arch:
+  - amd64
+  - aarch64
+init: false
+startup: application
+boot: auto
+
+# --- side panel (ingress) -------------------------------------------------- #
+ingress: true
+ingress_port: 8089
+panel_icon: mdi:transmission-tower-export
+panel_title: TECO Billing
+
+# --- API port for the HACS integration ------------------------------------- #
+# Exposes /data etc. at http://<HA-host>:8089 so the custom_components/teco
+# integration can reach it. The dashboard panel stays ingress-only. If you set
+# auth_token below, the exposed port requires it (ingress is exempt). Set this
+# to null in the UI to keep the service ingress-only.
+ports:
+  8089/tcp: 8089
+ports_description:
+  8089/tcp: TECO sidecar API (for the HACS integration)
+
+# --- persistent archive ---------------------------------------------------- #
+# Add-ons get a persistent /data dir automatically; the bill cache lives in
+# /data/cache and is never purged. Back up the add-on to preserve >3yr history.
+
+# --- Configuration tab ----------------------------------------------------- #
+options:
+  teco_user: ""
+  teco_pass: ""
+  auth_token: ""
+  backfill_bills: 36
+  session_ttl_min: 30
+  log_level: info
+schema:
+  teco_user: str
+  teco_pass: password
+  auth_token: password?
+  backfill_bills: int(1,120)
+  session_ttl_min: int(5,240)
+  log_level: list(trace|debug|info|warning|error)
