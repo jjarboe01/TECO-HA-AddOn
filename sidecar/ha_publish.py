@@ -16,6 +16,7 @@ No MQTT and no custom integration required. When SUPERVISOR_TOKEN is absent
 """
 from __future__ import annotations
 
+import json
 import os
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -237,9 +238,7 @@ async def configure_energy(log) -> bool:
                 resp = await ws.receive_json()
                 prefs = resp.get("result") or {}
                 sources = prefs.get("energy_sources", [])
-                log.info("energy prefs: %d sources: %s", len(sources),
-                         [(x.get("type"), [list(f.keys()) for f in x.get("flow_from", [])])
-                          for x in sources])
+                log.info("energy get_prefs raw: %s", json.dumps(prefs)[:1000])
                 ours = {"stat_energy_from": STAT_ENERGY, "stat_cost": STAT_COST}
                 grid = next((x for x in sources if x.get("type") == "grid"), None)
                 changed = False
@@ -248,6 +247,8 @@ async def configure_energy(log) -> bool:
                                     "cost_adjustment_day": 0.0})
                     changed = True
                 else:
+                    grid.setdefault("flow_to", [])
+                    grid.setdefault("cost_adjustment_day", 0.0)
                     ff = grid.setdefault("flow_from", [])
                     existing = next((f for f in ff if f.get("stat_energy_from") == STAT_ENERGY), None)
                     if existing:
