@@ -51,7 +51,7 @@ integration to install.
 ## Repository layout
 | Path | What it is |
 |---|---|
-| `addon/teco_billing/` | The **Home Assistant add-on** (this is the product): config, Dockerfile, `run.sh`, docs, and the vendored app in `app/`. |
+| `teco_billing/` | The **Home Assistant add-on** (this is the product): config, Dockerfile, `run.sh`, docs, and the vendored app in `app/`. |
 | `sidecar/` | The app source — `teco_auth_sidecar.py` (engine), `ha_publish.py` (HA push), `parsers.py`/`ibill.py`/`models.py` (verified parsers), `webui.html` (dashboard). Also runs as a **standalone Docker** container. |
 | `tests/` | Fixture-backed parser unit tests. |
 
@@ -65,7 +65,7 @@ integration to install.
    the **TECO** sensors appear under Devices & Services and `teco:energy_consumption`
    becomes available in **Settings → Dashboards → Energy**.
 
-Full walkthrough: [`DEPLOY.md`](DEPLOY.md) · Add-on docs: [`addon/teco_billing/DOCS.md`](addon/teco_billing/DOCS.md)
+Full walkthrough: [`DEPLOY.md`](DEPLOY.md) · Add-on docs: [`teco_billing/DOCS.md`](teco_billing/DOCS.md)
 
 ## Standalone Docker (optional)
 The same engine runs as a plain container (dashboard + JSON API, without the HA push):
@@ -86,7 +86,7 @@ python3 tests/test_parsers.py     # dashboard HTML parsers
 python3 tests/test_ibill.py       # InteractiveBill JSON parsers
 python3 sidecar/teco_auth_sidecar.py --once   # full live backfill -> cache/last_payload.json
 ```
-After editing `sidecar/`, re-vendor the add-on app: `./addon/sync.sh`.
+After editing `sidecar/`, re-vendor the add-on app: `./sync.sh`.
 See [`TECO_HA_Integration_Strategy.md`](TECO_HA_Integration_Strategy.md) for the full
 reverse-engineering writeup (login contract, ibill API map, design decisions).
 

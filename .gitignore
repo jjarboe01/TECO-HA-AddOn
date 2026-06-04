@@ -7,7 +7,7 @@ sidecar/.env
 
 # runtime caches / archives (keep the code, not the data)
 cache/
-addon/teco_billing/app/cache/
+teco_billing/app/cache/
 **/last_payload.json
 options.json
 

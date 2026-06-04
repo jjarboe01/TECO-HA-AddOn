@@ -11,22 +11,22 @@ serves a sidebar dashboard. A standalone Docker option is included for non-HA ho
 
 ## A. Install the add-on
 
-### A1. Local add-on
-1. Copy the add-on folder onto HA (via the **Samba** or **SSH/Advanced Terminal**
-   add-on) so you have `/addons/teco_billing/config.yaml`:
-   ```bash
-   rsync -a addon/teco_billing/ root@<ha-host>:/addons/teco_billing/
-   ```
-2. **Settings → Add-ons → Add-on Store → ⋮ → Check for updates.** "TECO Billing"
-   appears under **Local add-ons** → open it → **Install** (first build pulls the
-   Playwright base image, a few hundred MB, one time).
+### A1. Add the repository (recommended)
+The repo root is a valid Home Assistant add-on repository (`repository.yaml` +
+`teco_billing/` at the top level). In HA:
+1. **Settings → Add-ons → Add-on Store → ⋮ → Repositories** → paste
+   `https://github.com/jjarboe01/TECO-HA-AddOn` → **Add**.
+   (Or click the "Add repository to my Home Assistant" badge in the README.)
+2. The **TECO Billing** add-on appears in the store → open it → **Install** (first
+   build pulls the Playwright base image, a few hundred MB, one time).
 
-### A2. (Alternative) from a Git repo
-The add-on store expects `repository.yaml` + the add-on folder at the **repo root**.
-To use this route, publish a repo whose root contains `repository.yaml` and
-`teco_billing/` (the contents of `addon/`), then **Add-on Store → ⋮ → Repositories**
-and paste the URL. (You can also click the "Add repository to my Home Assistant"
-badge in the README.)
+### A2. (Alternative) local add-on
+Copy the add-on folder onto HA (via the **Samba** or **SSH/Advanced Terminal**
+add-on) so you have `/addons/teco_billing/config.yaml`:
+```bash
+rsync -a teco_billing/ root@<ha-host>:/addons/teco_billing/
+```
+Then **Add-on Store → ⋮ → Check for updates** → install from **Local add-ons**.
 
 ### A3. Configure & start
 **Configuration** tab:
@@ -92,7 +92,7 @@ UI at `http://<host>:8089/`; archive persists on the `teco_archive` volume — b
 | First build is slow / large | Expected — the Playwright base image bundles Chromium (one-time). |
 
 ## Maintenance
-- After editing the engine/parsers in `sidecar/`, re-vendor the add-on: `./addon/sync.sh`.
+- After editing the engine/parsers in `sidecar/`, re-vendor the add-on: `./sync.sh`.
 - Force-refresh one bill from the panel (↻) or `POST /reassemble?invoice_id=<id>`.
   Rebuild everything: `GET /data?force=true`.
 - The archive is append-only and never purged; back up the add-on's `/data`.
