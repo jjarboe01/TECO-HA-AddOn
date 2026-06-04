@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+- **Energy Dashboard cost — correct & safe.** Uses HA's current flat grid schema.
+  If you already have a grid source (e.g. a panel/CT monitor), it's left alone to
+  avoid double-counting. New option **`grid_cost_from_teco`** (default off): when on,
+  the add-on sets your existing grid source's cost to TECO's **actual billed cost**
+  (`teco:energy_cost`), replacing any static $/kWh price.
+- Graphs: chart axes now show **min · avg · max** (not just max).
+
 ## 0.5.0
 - **Auto-wire the Energy Dashboard cost.** On first run the add-on attaches the
   `teco:energy_cost` statistic to the `teco:energy_consumption` grid source via the

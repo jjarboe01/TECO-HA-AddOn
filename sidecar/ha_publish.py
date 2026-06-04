@@ -29,6 +29,10 @@ CORE_WS = "ws://supervisor/core/websocket"
 STAT_ENERGY = "teco:energy_consumption"
 STAT_COST = "teco:energy_cost"
 
+# When true, set an existing grid source's cost to TECO's actual billed cost
+# (replacing any static $/kWh price). Opt-in — it changes the user's energy config.
+GRID_COST_FROM_TECO = os.environ.get("GRID_COST_FROM_TECO", "0") != "0"
+
 
 def available() -> bool:
     return bool(SUPERVISOR_TOKEN)
@@ -267,13 +271,25 @@ async def configure_energy(log) -> bool:
                 elif not any(g.get("stat_energy_from") for g in grids):
                     sources.append(_grid_template())
                     changed = True
+                elif GRID_COST_FROM_TECO:
+                    # use TECO's actual billed cost on the existing grid source
+                    g = next(x for x in grids if x.get("stat_energy_from"))
+                    if (g.get("stat_cost") != STAT_COST
+                            or g.get("number_energy_price") is not None
+                            or g.get("entity_energy_price") is not None):
+                        g["stat_cost"] = STAT_COST
+                        g["number_energy_price"] = None
+                        g["entity_energy_price"] = None
+                        changed = True
+                        log.info("energy: set grid source %s cost -> teco:energy_cost "
+                                 "(actual billed cost; replaced any static price)",
+                                 g.get("stat_energy_from"))
                 else:
                     other = next((g.get("stat_energy_from") for g in grids
                                   if g.get("stat_energy_from")), "?")
                     log.info("energy: a grid source (%s) is already configured; leaving it "
-                             "alone to avoid double-counting. TECO statistics "
-                             "'teco:energy_consumption' / 'teco:energy_cost' are available to "
-                             "add or wire manually.", other)
+                             "alone. Enable 'grid_cost_from_teco' to use TECO's actual cost, "
+                             "or add the teco statistics manually.", other)
                     return True
 
                 if changed:
