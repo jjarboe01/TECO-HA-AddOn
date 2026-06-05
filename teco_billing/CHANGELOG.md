@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1
+- Dashboard: new **$/kWh trend** chart (per bill), zoomed so the small rate variance
+  is readable, with a hover tooltip.
+- Dashboard: **normalize all displayed dates** to `YYYY-MM-DD` so the newest bill no
+  longer shows in a different format than the rest.
+
 ## 0.6.0
 - **Energy Dashboard cost — correct & safe.** Uses HA's current flat grid schema.
   If you already have a grid source (e.g. a panel/CT monitor), it's left alone to

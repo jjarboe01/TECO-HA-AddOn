@@ -34,6 +34,7 @@
   .bars { display:flex; align-items:flex-end; gap:3px; height:120px; }
   .bar { flex:1; background:var(--accent); border-radius:3px 3px 0 0; min-width:2px; position:relative; }
   .bar.cost { background:var(--accent2); }
+  .bar.rate { background:var(--good); }
   .bar:hover { filter:brightness(1.3); }
   .axis { display:flex; justify-content:space-between; color:var(--muted); font-size:11px; margin-top:6px; }
   .muted { color:var(--muted); }
@@ -65,6 +66,7 @@
       <section><h2>Usage per bill (kWh)</h2><div class="bars" id="kwhBars"></div><div class="axis" id="kwhAxis"></div></section>
       <section><h2>Cost per bill ($)</h2><div class="bars" id="costBars"></div><div class="axis" id="costAxis"></div></section>
     </div>
+    <section><h2>$/kWh trend (per bill)</h2><div class="bars" id="rateBars"></div><div class="axis" id="rateAxis"></div></section>
     <section><h2>Daily usage (kWh) — most recent 90 days</h2><div class="bars" id="dailyBars"></div><div class="axis" id="dailyAxis"></div></section>
     <section>
       <h2>All bills <span class="muted" id="billCount"></span></h2>
@@ -92,6 +94,15 @@
 const $ = s => document.querySelector(s);
 const fmtN = (n,d=0) => n==null ? "—" : Number(n).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
 const money = n => n==null ? "—" : "$"+fmtN(n,2);
+// normalize any date (ISO "2026-05-21" or "May 21, 2026") to a consistent YYYY-MM-DD
+const fmtDate = s => {
+  if(!s) return "—";
+  if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+  const t = Date.parse(s);
+  if(isNaN(t)) return s;
+  const d = new Date(t), p = n => String(n).padStart(2,"0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+};
 let DATA = null, sortKey="service_period_end", sortDir=-1;
 
 async function load(url, label){
@@ -120,13 +131,22 @@ function showTip(html, x, y){
 }
 function hideTip(){ tipEl.style.display = "none"; }
 
-function bars(el, axisEl, items, valFn, labelFn, cls, tipFn){
-  const max = Math.max(1, ...items.map(it => valFn(it) || 0));
+function bars(el, axisEl, items, valFn, labelFn, cls, tipFn, decimals){
+  const d = decimals != null ? decimals : (cls==='cost' ? 2 : 0);
+  // bars scale between min and max so small-variance series (like $/kWh) are readable
+  const all = items.map(it => valFn(it) || 0);
+  const max = Math.max(1e-9, ...all);
+  const nums = items.map(it=>valFn(it)).filter(v=>v!=null && v>0);  // ignore empty/partial periods
+  const min = nums.length ? Math.min(...nums) : 0;
+  const avg = nums.length ? nums.reduce((a,b)=>a+b,0)/nums.length : 0;
+  const lo = (decimals != null && nums.length) ? min*0.97 : 0;       // zoomed baseline for rate
+  const span = Math.max(1e-9, max - lo);
   el._items = items;
-  el._tip = tipFn || (it => `<b>${labelFn(it)}</b>: ${fmtN(valFn(it), cls==='cost'?2:0)}`);
+  el._tip = tipFn || (it => `<b>${labelFn(it)}</b>: ${fmtN(valFn(it), d)}`);
   el.innerHTML = items.map((it, i) => {
     const v = valFn(it) || 0;
-    return `<div class="bar ${cls||''}" data-i="${i}" style="height:${(v/max*100).toFixed(1)}%"></div>`;
+    const h = v > 0 ? Math.max(2, (v - lo) / span * 100) : 0;
+    return `<div class="bar ${cls||''}" data-i="${i}" style="height:${h.toFixed(1)}%"></div>`;
   }).join("");
   el.onmousemove = (e) => {
     const b = e.target.closest(".bar");
@@ -135,10 +155,6 @@ function bars(el, axisEl, items, valFn, labelFn, cls, tipFn){
   };
   el.onmouseleave = hideTip;
   if(items.length){
-    const d = cls==='cost'?2:0;
-    const nums = items.map(it=>valFn(it)).filter(v=>v!=null && v>0);  // ignore empty/partial periods
-    const min = nums.length ? Math.min(...nums) : 0;
-    const avg = nums.length ? nums.reduce((a,b)=>a+b,0)/nums.length : 0;
     axisEl.innerHTML =
       `<span>${labelFn(items[0])}</span>` +
       `<span>min ${fmtN(min,d)} · avg ${fmtN(avg,d)} · max ${fmtN(max,d)}</span>` +
@@ -157,6 +173,9 @@ const dayTip = d => `<div class="h">${d.date || ""}</div>` +
   `Usage: <b>${fmtN(d.kwh,1)} kWh</b>` +
   (d.temperature != null ? `<br>Temp: ${fmtN(d.temperature)}°F` : "") +
   (d.estimated ? `<br><span class="muted">estimated</span>` : "");
+const rateTip = b => `<div class="h">${b.label || b.service_period_end || ""}</div>` +
+  `Rate: <b>$${b.cost_per_kwh != null ? fmtN(b.cost_per_kwh,4) : "—"}/kWh</b><br>` +
+  `${fmtN(b.kwh_used)} kWh · ${money(b.cost)}`;
 
 function render(){
   const bills = (DATA.bills||[]).slice();
@@ -180,6 +199,7 @@ function render(){
 
   bars($("#kwhBars"), $("#kwhAxis"), byEnd, b=>b.kwh_used, b=>b.service_period_end||b.label||"", "", billTip);
   bars($("#costBars"), $("#costAxis"), byEnd, b=>b.cost, b=>b.service_period_end||b.label||"", "cost", billTip);
+  bars($("#rateBars"), $("#rateAxis"), byEnd, b=>b.cost_per_kwh, b=>b.service_period_end||b.label||"", "rate", rateTip, 4);
   const d90 = daily.slice(-90);
   bars($("#dailyBars"), $("#dailyAxis"), d90, d=>d.kwh, d=>d.date||"", "", dayTip);
 
@@ -196,9 +216,9 @@ function renderTable(bills){
   $("#billCount").textContent = `(${bills.length})`;
   $("#billsTbl tbody").innerHTML = bills.map(b=>`
     <tr>
-      <td>${b.bill_date||b.label||"—"}</td>
-      <td>${b.service_period_start||"—"}</td>
-      <td>${b.service_period_end||"—"}</td>
+      <td>${fmtDate(b.bill_date||b.label)}</td>
+      <td>${fmtDate(b.service_period_start)}</td>
+      <td>${fmtDate(b.service_period_end)}</td>
       <td>${b.service_days??"—"}</td>
       <td>${fmtN(b.kwh_used)}</td>
       <td>${money(b.cost)}</td>
