@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.0
+First stable release. 🎉 A single Home Assistant add-on that brings Tampa Electric
+(TECO) billing, usage, cost, and service-period data into Home Assistant — verified
+running end to end on a live install.
+
+- **Energy Dashboard** — actual **daily kWh** (3 years backfilled) + a parallel
+  **daily cost** statistic. Safe auto-wire that won't double-count an existing grid
+  source; optional `grid_cost_from_teco` to use your real billed cost.
+- **Sensors** — amount due, last bill cost/usage/$ per kWh, service period, account
+  status, and program flags, kept alive by a 5-minute heartbeat (survive HA restarts).
+- **Sidebar billing dashboard** — bills table; per-bill kWh, cost, and **$/kWh trend**
+  charts with **y-axis scales**, **min·avg·max**, and hover tooltips; daily-usage chart;
+  CSV export; per-bill re-assemble; wide layout for large monitors.
+- **Never-purged archive** — every bill ever pulled is retained (history grows past
+  TECO's ~3-year window).
+- Built on a headless-browser engine that gets past **reCAPTCHA v3 + Cloudflare +
+  NetScaler** (no public API). No HACS, no MQTT. Slim Chromium image.
+
 ## 0.6.1
 - Dashboard: new **$/kWh trend** chart (per bill), zoomed so the small rate variance
   is readable, with a hover tooltip.
