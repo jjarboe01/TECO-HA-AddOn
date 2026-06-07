@@ -1,5 +1,5 @@
 name: TECO Billing
-version: "1.0.0"
+version: "1.1.0"
 slug: teco_billing
 description: >-
   Pulls Tampa Electric (TECO) billing, usage, cost and service-period data into

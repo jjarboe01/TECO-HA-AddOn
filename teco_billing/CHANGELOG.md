@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.0
+- **Daily usage tracks the current (un-billed) period.** Each poll now also fetches any
+  new days from TECO past the last bill — using the live session token — so the daily
+  chart and Energy Dashboard advance as soon as TECO posts new readings, instead of
+  waiting for the next bill to close. (TECO publishes daily readings with a lag; the
+  add-on picks them up on its next poll once available.)
+
 ## 1.0.0
 First stable release. 🎉 A single Home Assistant add-on that brings Tampa Electric
 (TECO) billing, usage, cost, and service-period data into Home Assistant — verified

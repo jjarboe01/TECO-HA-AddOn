@@ -39,7 +39,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 # verified parsers/models (siblings in this folder; vendored together into the image)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -127,6 +127,10 @@ class TecoSession:
         self._lock = asyncio.Lock()
         self._cache = _load_cache()  # invoice_id -> parsed bill dict
         self._last_data: dict | None = None  # last full payload (for sensor heartbeat)
+        self._ibill_auth: dict = {}          # session headers for the ibill meter API
+        self._daily_url: str | None = None   # meterDataDailyUsage endpoint URL
+        self._meter_dln: str | None = None   # electric meter DLN (for daily queries)
+        self._recent_daily: list = []        # current-period daily usage (between bills)
 
     # ---- browser / auth ---------------------------------------------------- #
     async def _ensure_browser(self) -> None:
@@ -191,6 +195,13 @@ class TecoSession:
                 if comp in WANT_COMPONENTS or "meterdatadaily" in comp:
                     body = await resp.text()
                     collected[comp] = json.loads(body)
+                if "meterdatadaily" in comp:
+                    # stash the session auth headers + url so we can fetch recent days later
+                    hdrs = await resp.request.all_headers()
+                    self._ibill_auth = {k: hdrs[k] for k in
+                                        ("authorization", "usercredentials", "iscollectiveaccount")
+                                        if k in hdrs}
+                    self._daily_url = resp.url.split("?")[0]
             except Exception:
                 pass
 
@@ -201,6 +212,45 @@ class TecoSession:
         finally:
             self._page.remove_listener("response", on_response)
         return collected
+
+    def _latest_daily_date(self) -> date | None:
+        """Most recent day we already have across all cached bills + recent_daily."""
+        latest = None
+        seqs = [d for det in self._cache.values() for d in det.get("daily_usage", [])]
+        seqs += self._recent_daily
+        for d in seqs:
+            ds = d.get("date")
+            if not ds:
+                continue
+            try:
+                dt = date.fromisoformat(str(ds)[:10])
+            except ValueError:
+                continue
+            if latest is None or dt > latest:
+                latest = dt
+        return latest
+
+    async def _fetch_recent_daily(self, dln: str | None, since: date) -> list:
+        """Fetch daily usage from `since`..today via the captured ibill session token.
+        Returns [] when there's no token yet or TECO has no data past the last read."""
+        if not (self._ibill_auth and self._daily_url and dln):
+            return []
+        today = datetime.now().date()
+        if since > today:
+            return []
+        body = {"dln": dln, "sdt": since.strftime("%Y%m%d"), "edt": today.strftime("%Y%m%d"),
+                "intp": "D", "dkwh": "x", "rkwh": "", "pf": "", "kw": "", "dtoun": "", "dtouf": ""}
+        try:
+            raw = await self._page.evaluate(
+                """async ({url, body, auth}) => {
+                    const h = Object.assign({'Content-Type':'application/json'}, auth);
+                    const r = await fetch(url, {method:'POST', credentials:'include',
+                        headers:h, body: JSON.stringify(body)});
+                    try { return await r.json(); } catch(e){ return null; }
+                }""", {"url": self._daily_url, "body": body, "auth": self._ibill_auth})
+        except Exception:  # noqa: BLE001
+            return []
+        return models.to_jsonable(ibill.parse_daily_usage(raw or {}))
 
     async def _bill_detail(self, caid: str, invoice_id: str) -> dict:
         """Navigate one bill's ViewBill, parse service period + cost + daily usage."""
@@ -264,6 +314,10 @@ class TecoSession:
                 mk = next((k for k in comps if "monthly" in k), None)
                 if mk:
                     monthly = ibill.parse_monthly_usage(comps[mk])
+                # capture the electric meter DLN for recent-daily queries
+                for m in ((comps.get("meterdata") or {}).get("MeterTabel") or []):
+                    if str(m.get("Service", "")).lower() == "electric" and m.get("DLN"):
+                        self._meter_dln = str(m.get("DLN"))
 
             # fetch any bills in the current window not already cached (or all if force).
             # NOTE: the cache is append-only — bills are never purged, so the archive
@@ -281,6 +335,18 @@ class TecoSession:
                 detail["label"] = b.get("label")
                 self._cache[inid] = detail
                 _save_cache(self._cache)
+
+            # pull recent days BETWEEN bills so the chart tracks past the last bill,
+            # without waiting for the next bill to close (uses the captured session token)
+            try:
+                latest = self._latest_daily_date()
+                since = (latest + timedelta(days=1)) if latest \
+                    else (datetime.now().date() - timedelta(days=45))
+                self._recent_daily = await self._fetch_recent_daily(self._meter_dln, since)
+                if self._recent_daily:
+                    LOG.info("recent daily: +%d day(s) from %s", len(self._recent_daily), since)
+            except Exception:  # noqa: BLE001
+                LOG.exception("recent daily fetch failed")
 
             # assemble the response from the ENTIRE cache (full retained history)
             details, daily_clean = self._assemble_from_cache()
@@ -305,6 +371,7 @@ class TecoSession:
         for detail in self._cache.values():
             details.append({k: v for k, v in detail.items() if k != "daily_usage"})
             daily_all.extend(detail.get("daily_usage", []))
+        daily_all.extend(self._recent_daily)   # current-period days (between bills)
         details.sort(key=lambda d: (d.get("service_period_end") or d.get("bill_date") or ""),
                      reverse=True)
         # de-dupe daily by date (periods can share a boundary day)
