@@ -12,6 +12,12 @@ bill — so your history grows past TECO's ~3-year window.
 3. Open the **Configuration** tab and enter:
    - **teco_user** — your TECO portal username
    - **teco_pass** — your TECO portal password (stored by Supervisor; shown as a password field)
+   - **account_id** — *optional.* Only matters if your login has more than one account
+     (e.g. Tampa Electric **and** Peoples Gas, or several premises). Leave it empty and
+     the add-on picks the **electric** account automatically; set it to a 12-digit
+     contract account number to pin a specific one. The add-on logs the accounts it
+     finds (`account picker: 2 account(s) -> ...NNNN, ...NNNN`) so you can copy the
+     right number from the log if the automatic choice is wrong.
    - **backfill_bills** — how many bills to pull on first run (default 36 ≈ 3 years)
    - **session_ttl_min** — re-login interval (default 30)
 4. **Start** the add-on, then open it from the **TECO Billing** sidebar panel.

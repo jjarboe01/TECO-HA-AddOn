@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.0
+- **Fix: "login OK, no data" on logins with more than one account (#3).** TECO parks
+  multi-account logins (e.g. Tampa Electric + Peoples Gas, or several premises) on an
+  `/Selection` account picker instead of the dashboard. That page still has a "Log Off"
+  link, so the session looked healthy while every dashboard selector and every
+  `/Dashboard/*` endpoint failed — the add-on published 9 placeholder entities, imported
+  zero statistics, and logged nothing. The picker is now handled: it selects the
+  **electric** account automatically, or the one pinned by the new **account_id** option.
+- **New option `account_id`** — contract account number to use when the picker offers
+  several. Leave empty to auto-select the electric account.
+- **No more silent no-op.** When the dashboard scrape comes back empty the add-on now
+  logs the landing URL and what was missing, instead of skipping the bill fetch quietly.
+- **Fix: `monthly_usage` was always empty** — the `meterDataMonthlyUsage` component was
+  never added to the collected set, so the response was discarded before it was parsed.
+
 ## 1.1.1
 - **Fix: daily usage (and the $/kWh chart) now update when a new bill posts.** TECO can
   publish a bill's total before its day-by-day readings are available; a bill fetched in

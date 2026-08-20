@@ -64,6 +64,10 @@ BACKFILL_BILLS = int(os.environ.get("BACKFILL_BILLS", "36"))
 POLL_INTERVAL = max(1, int(os.environ.get("POLL_INTERVAL_HOURS", "6"))) * 3600
 SENSOR_REFRESH = max(1, int(os.environ.get("SENSOR_REFRESH_MIN", "5"))) * 60
 SETUP_ENERGY = os.environ.get("SETUP_ENERGY_DASHBOARD", "1") != "0"
+# Contract account to use when the login has more than one (electric + gas, or
+# multiple premises) and TECO parks us on the /Selection picker. Empty = auto:
+# prefer the ELECTRIC account, else the first row.
+ACCOUNT_ID = (os.environ.get("TECO_ACCOUNT") or "").strip()
 HEADLESS = os.environ.get("HEADLESS", "1") != "0"
 TOKEN = os.environ.get("SIDECAR_TOKEN")
 CACHE_DIR = os.environ.get("CACHE_DIR", os.path.join(os.path.dirname(__file__), "cache"))
@@ -79,7 +83,11 @@ STATUS_ENDPOINTS = {
     "power_updates": "/Dashboard/GetPowerUpdatesStatus",
 }
 # ibill components we care about, by the URL's trailing path segment (lowercased)
-WANT_COMPONENTS = {"meterdata", "chargedetails", "billselector", "meterdatadailyusage"}
+WANT_COMPONENTS = {"meterdata", "chargedetails", "billselector",
+                   "meterdatadailyusage", "meterdatamonthlyusage"}
+
+# The account picker at /Selection: each account is a clickable <tr>.
+SELECTION_ROW = 'tr[data-pdsa-action="selection"]'
 
 
 def _coerce_flag(value):
@@ -173,6 +181,64 @@ class TecoSession:
             raise RuntimeError("login failed (reCAPTCHA score or bad credentials)")
         self._logged_in_at = time.time()
         LOG.info("login OK")
+        await self._select_account()
+
+    async def _select_account(self) -> bool:
+        """Handle the /Selection account picker.
+
+        A login with more than one contract account (e.g. Tampa Electric + Peoples
+        Gas, or several premises) lands on /Selection instead of the dashboard.
+        That page still has a "Log Off" link, so _is_logged_in() is happy while
+        every dashboard selector and every /Dashboard/* endpoint fails -- which is
+        exactly the "login OK, no data" symptom (issue #3).
+
+        Preference: TECO_ACCOUNT (exact contract account id) -> first ELECTRIC
+        account -> first row. Returns True if a selection was made.
+        """
+        try:
+            if "/Selection" not in self._page.url:
+                return False
+            rows = await self._page.query_selector_all(SELECTION_ROW)
+            if not rows:
+                LOG.warning("on the account picker but found no selectable accounts; "
+                            "the page layout may have changed")
+                return False
+
+            cands = []
+            for r in rows:
+                val = await r.get_attribute("data-pdsa-val")
+                # text_content(), NOT inner_text(): the "Electric Service" / "Gas
+                # Service" label is visually-hidden, so inner_text() omits it.
+                txt = " ".join(((await r.text_content()) or "").split())
+                cands.append((val, txt, r))
+            LOG.info("account picker: %d account(s) -> %s",
+                     len(cands), ", ".join(f"...{c[0][-4:]}" for c in cands if c[0]))
+
+            pick = None
+            if ACCOUNT_ID:
+                pick = next((c for c in cands if c[0] == ACCOUNT_ID), None)
+                if not pick:
+                    LOG.warning("configured account_id %s is not in the picker; "
+                                "falling back to auto-select", ACCOUNT_ID)
+            if not pick:
+                pick = next((c for c in cands if "electric" in c[1].lower()), None)
+                if pick and len(cands) > 1:
+                    LOG.info("auto-selected the ELECTRIC account; set 'account_id' "
+                             "in the add-on config to pin a different one")
+            if not pick:
+                pick = cands[0]
+                LOG.warning("no ELECTRIC account matched; falling back to the first "
+                            "account (...%s). Set 'account_id' if that is wrong.",
+                            (pick[0] or "")[-4:])
+
+            LOG.info("selecting account ...%s", (pick[0] or "")[-4:])
+            async with self._page.expect_navigation(wait_until="networkidle", timeout=60000):
+                await pick[2].click()
+            await self._page.wait_for_timeout(1200)
+            return True
+        except Exception:  # noqa: BLE001
+            LOG.exception("account selection failed")
+            return False
 
     async def _ensure_session(self) -> None:
         await self._ensure_browser()
@@ -285,6 +351,8 @@ class TecoSession:
             if not await self._is_logged_in():
                 await self._login()
                 await self._page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
+            # navigating back to "/" can re-present the picker on multi-account logins
+            await self._select_account()
             html = await self._page.content()
             account = parsers.parse_account_info(html)
             current_bill = parsers.parse_current_bill(html)
@@ -318,6 +386,15 @@ class TecoSession:
                 for m in ((comps.get("meterdata") or {}).get("MeterTabel") or []):
                     if str(m.get("Service", "")).lower() == "electric" and m.get("DLN"):
                         self._meter_dln = str(m.get("DLN"))
+            else:
+                # Do NOT fail silently here -- this is the branch that produced
+                # "login OK, no data" with a clean log (issue #3).
+                LOG.error(
+                    "dashboard scrape found nothing (url=%s, contract_account_id=%s, "
+                    "view_bill_url=%s) -- skipping bill fetch. If the url is /Selection "
+                    "the account picker was not handled; otherwise the portal markup "
+                    "may have changed.",
+                    self._page.url, caid, current_bill.view_bill_url)
 
             # fetch any bills in the current window not already cached (or all if force).
             # NOTE: the cache is append-only — bills are never purged, so the archive
@@ -399,6 +476,7 @@ class TecoSession:
         async with self._lock:
             await self._ensure_session()
             await self._page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
+            await self._select_account()
             html = await self._page.content()
             caid = parsers.parse_account_info(html).contract_account_id
             if not caid:
