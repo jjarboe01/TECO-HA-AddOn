@@ -64,13 +64,14 @@
 <main>
   <div id="status" class="loading">Loading archive…</div>
   <div id="content" style="display:none">
+    <div id="acctTabs" style="display:none;gap:8px;margin:0 0 14px 0"></div>
     <div class="cards" id="cards"></div>
     <div class="row">
-      <section><h2>Usage per bill (kWh)</h2><div class="bars" id="kwhBars"></div><div class="axis" id="kwhAxis"></div></section>
-      <section><h2>Cost per bill ($)</h2><div class="bars" id="costBars"></div><div class="axis" id="costAxis"></div></section>
+      <section><h2 id="hUsage">Usage per bill</h2><div class="bars" id="kwhBars"></div><div class="axis" id="kwhAxis"></div></section>
+      <section><h2 id="hCost">Cost per bill ($)</h2><div class="bars" id="costBars"></div><div class="axis" id="costAxis"></div></section>
     </div>
-    <section><h2>$/kWh trend (per bill)</h2><div class="bars" id="rateBars"></div><div class="axis" id="rateAxis"></div></section>
-    <section><h2>Daily usage (kWh) — most recent 90 days</h2><div class="bars" id="dailyBars"></div><div class="axis" id="dailyAxis"></div></section>
+    <section><h2 id="hRate">Rate trend (per bill)</h2><div class="bars" id="rateBars"></div><div class="axis" id="rateAxis"></div></section>
+    <section id="secDaily"><h2 id="hDaily">Daily usage — most recent 90 days</h2><div class="bars" id="dailyBars"></div><div class="axis" id="dailyAxis"></div></section>
     <section>
       <h2>All bills <span class="muted" id="billCount"></span></h2>
       <div style="overflow:auto">
@@ -80,9 +81,9 @@
           <th data-k="service_period_start">Service start</th>
           <th data-k="service_period_end">Service end</th>
           <th data-k="service_days">Days</th>
-          <th data-k="kwh_used">kWh</th>
+          <th data-k="kwh_used" id="thUsage">kWh</th>
           <th data-k="cost">Cost</th>
-          <th data-k="cost_per_kwh">$/kWh</th>
+          <th data-k="cost_per_kwh" id="thRate">$/kWh</th>
           <th data-k="previous_reading">Prev read</th>
           <th data-k="current_reading">Cur read</th>
           <th>Re-assemble</th>
@@ -173,23 +174,78 @@ function bars(el, axisEl, items, valFn, labelFn, cls, tipFn, decimals){
 }
 
 // rich tooltips
+let U = {unit:"kWh", rate:"$/kWh", daily:true, dec:0};   // set per-render by render()
 const billTip = b => `<div class="h">${b.label || b.service_period_end || ""}</div>` +
   `Service: ${b.service_period_start || "?"} → ${b.service_period_end || "?"}` +
   (b.service_days != null ? ` (${b.service_days}d)` : "") + `<br>` +
-  `Usage: <b>${fmtN(b.kwh_used)} kWh</b><br>` +
+  `Usage: <b>${fmtN(b.kwh_used,U.dec)} ${U.unit}</b><br>` +
   `Cost: <b>${money(b.cost)}</b><br>` +
-  `Rate: <b>${b.cost_per_kwh != null ? "$"+fmtN(b.cost_per_kwh,4) : "—"}/kWh</b>`;
+  `Rate: <b>${b.cost_per_kwh != null ? "$"+fmtN(b.cost_per_kwh,4) : "—"}/${U.unit.replace(/s$/,"")}</b>`;
 const dayTip = d => `<div class="h">${d.date || ""}</div>` +
-  `Usage: <b>${fmtN(d.kwh,1)} kWh</b>` +
+  `Usage: <b>${fmtN(d.kwh,1)} ${U.unit}</b>` +
   (d.temperature != null ? `<br>Temp: ${fmtN(d.temperature)}°F` : "") +
   (d.estimated ? `<br><span class="muted">estimated</span>` : "");
 const rateTip = b => `<div class="h">${b.label || b.service_period_end || ""}</div>` +
-  `Rate: <b>$${b.cost_per_kwh != null ? fmtN(b.cost_per_kwh,4) : "—"}/kWh</b><br>` +
-  `${fmtN(b.kwh_used)} kWh · ${money(b.cost)}`;
+  `Rate: <b>$${b.cost_per_kwh != null ? fmtN(b.cost_per_kwh,4) : "—"}/${U.unit.replace(/s$/,"")}</b><br>` +
+  `${fmtN(b.kwh_used,U.dec)} ${U.unit} · ${money(b.cost)}`;
+
+// Which account is on screen. Gas bills are in THERMS and electric in kWh, so
+// they must never share an axis -- pick one account and filter to it.
+let ACCT = null;
+
+function accountList(){
+  const m = DATA.accounts || {};
+  const ids = Object.keys(m);
+  if(ids.length) return ids.map(id=>({id, ...m[id]}));
+  // /data (single account) or a pre-1.3 archive: derive from the bills we have
+  const seen = {};
+  (DATA.bills||[]).forEach(b=>{ const k=b.account_id||"unknown";
+    seen[k] = seen[k] || {id:k, account_id:k, service:b.service||"electric", bills:0};
+    seen[k].bills++; });
+  return Object.values(seen);
+}
+
+function renderTabs(list){
+  const el = $("#acctTabs");
+  if(list.length < 2){ el.style.display="none"; return; }
+  el.style.display="flex";
+  el.innerHTML = list.map(a=>{
+    const on = a.id===ACCT;
+    const name = a.service==="gas" ? "Gas" : a.service==="electric" ? "Electric" : "Account";
+    return `<button class="${on?"":"ghost"} acct-tab" data-id="${a.id}">`+
+           `${name} <span class="muted">····${String(a.id).slice(-4)} · ${a.bills}</span></button>`;
+  }).join("");
+  el.querySelectorAll(".acct-tab").forEach(b=>b.onclick=()=>{ ACCT=b.dataset.id; render(); });
+}
 
 function render(){
-  const bills = (DATA.bills||[]).slice();
+  const list = accountList();
+  if(!ACCT || !list.some(a=>a.id===ACCT)){
+    const pref = list.find(a=>a.id===DATA.primary_account)
+              || list.find(a=>a.service==="electric")
+              || list.find(a=>a.service==="gas") || list[0];
+    ACCT = pref ? pref.id : null;
+  }
+  renderTabs(list);
+  const cur = list.find(a=>a.id===ACCT) || {};
+  const isGas = cur.service==="gas";
+  const unknown = cur.service!=="gas" && cur.service!=="electric";
+  // TECO bills gas in therms; parse_meter_data stores that in the same field.
+  // Until the first poll labels the account, say "units" rather than assert kWh --
+  // asserting it showed the gas account as Electric/kWh on every restart.
+  U = isGas    ? {unit:"therms", rate:"$/therm", daily:false, dec:1}
+    : unknown  ? {unit:"units",  rate:"$/unit",  daily:true,  dec:1}
+               : {unit:"kWh",    rate:"$/kWh",   daily:true,  dec:0};
+
+  const all = (DATA.bills||[]);
+  const bills = (list.length>1 ? all.filter(b=>(b.account_id||DATA.primary_account)===ACCT) : all.slice());
   const daily = (DATA.daily_usage||[]).slice();
+
+  $("#hUsage").textContent = `Usage per bill (${U.unit})`;
+  $("#hRate").textContent  = `${U.rate} trend (per bill)`;
+  $("#hDaily").textContent = `Daily usage (${U.unit}) — most recent 90 days`;
+  // TECO publishes no daily readings for gas at all
+  $("#secDaily").style.display = U.daily ? "" : "none";
   $("#acct").textContent = `${DATA.archived_bills ?? bills.length} bills archived` +
      (DATA.exported_at? ` · exported ${new Date(DATA.exported_at).toLocaleString()}`:"")+
      (DATA.fetched_at? ` · refreshed ${new Date(DATA.fetched_at).toLocaleString()}`:"");
@@ -202,17 +258,19 @@ function render(){
   const avgCpk = totKwh? totCost/totKwh : null;
   $("#cards").innerHTML = `
     <div class="card"><div class="k">Latest bill</div><div class="v">${money(last.cost)}</div><div class="muted">${last.label||"—"}</div></div>
-    <div class="card"><div class="k">Latest usage</div><div class="v">${fmtN(last.kwh_used)} <small>kWh</small></div><div class="muted">${last.service_period_start||"?"} → ${last.service_period_end||"?"}</div></div>
-    <div class="card"><div class="k">Latest $/kWh</div><div class="v">${last.cost_per_kwh!=null?"$"+fmtN(last.cost_per_kwh,4):"—"}</div></div>
-    <div class="card"><div class="k">Avg $/kWh (all)</div><div class="v">${avgCpk!=null?"$"+fmtN(avgCpk,4):"—"}</div></div>
-    <div class="card"><div class="k">Total archived</div><div class="v">${fmtN(totKwh)} <small>kWh</small></div><div class="muted">${money(totCost)}</div></div>`;
+    <div class="card"><div class="k">Latest usage</div><div class="v">${fmtN(last.kwh_used,U.dec)} <small>${U.unit}</small></div><div class="muted">${last.service_period_start||"?"} → ${last.service_period_end||"?"}</div></div>
+    <div class="card"><div class="k">Latest ${U.rate}</div><div class="v">${last.cost_per_kwh!=null?"$"+fmtN(last.cost_per_kwh,4):"—"}</div></div>
+    <div class="card"><div class="k">Avg ${U.rate} (all)</div><div class="v">${avgCpk!=null?"$"+fmtN(avgCpk,4):"—"}</div></div>
+    <div class="card"><div class="k">Total archived</div><div class="v">${fmtN(totKwh,U.dec)} <small>${U.unit}</small></div><div class="muted">${money(totCost)}</div></div>`;
 
-  bars($("#kwhBars"), $("#kwhAxis"), byEnd, b=>b.kwh_used, b=>b.service_period_end||b.label||"", "", billTip);
+  bars($("#kwhBars"), $("#kwhAxis"), byEnd, b=>b.kwh_used, b=>b.service_period_end||b.label||"", "", billTip, U.dec);
   bars($("#costBars"), $("#costAxis"), byEnd, b=>b.cost, b=>b.service_period_end||b.label||"", "cost", billTip);
   bars($("#rateBars"), $("#rateAxis"), byEnd, b=>b.cost_per_kwh, b=>b.service_period_end||b.label||"", "rate", rateTip, 4);
   const d90 = daily.slice(-90);
   bars($("#dailyBars"), $("#dailyAxis"), d90, d=>d.kwh, d=>d.date||"", "", dayTip);
 
+  $("#thUsage").textContent = U.unit;
+  $("#thRate").textContent  = U.rate;
   renderTable(bills);
   $("#status").style.display="none"; $("#content").style.display="block";
 }
@@ -230,7 +288,7 @@ function renderTable(bills){
       <td>${fmtDate(b.service_period_start)}</td>
       <td>${fmtDate(b.service_period_end)}</td>
       <td>${b.service_days??"—"}</td>
-      <td>${fmtN(b.kwh_used)}</td>
+      <td>${fmtN(b.kwh_used,U.dec)}</td>
       <td>${money(b.cost)}</td>
       <td>${b.cost_per_kwh!=null?"$"+fmtN(b.cost_per_kwh,4):"—"}</td>
       <td>${fmtN(b.previous_reading)}</td>
@@ -247,7 +305,7 @@ function renderTable(bills){
 }
 
 document.querySelectorAll("#billsTbl th[data-k]").forEach(th=>th.onclick=()=>{
-  const k=th.dataset.k; sortDir = (sortKey===k? -sortDir : -1); sortKey=k; renderTable(DATA.bills||[]);
+  const k=th.dataset.k; sortDir = (sortKey===k? -sortDir : -1); sortKey=k; render();
 });
 $("#reload").onclick=()=>load("export","Reloading archive…");
 $("#refresh").onclick=()=>load("data","Refreshing from TECO (first run can take a few minutes)…");

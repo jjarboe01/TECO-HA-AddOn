@@ -8,8 +8,12 @@ This module uses it to:
   1. Feed the **Energy Dashboard** — import daily kWh + daily cost as long-term
      statistics via the `recorder/import_statistics` WebSocket command
      (statistic_ids `teco:energy_consumption` and `teco:energy_cost`).
+     Gas, when the login has a Peoples Gas account, is imported alongside it as
+     `teco:gas_consumption` (CCF, one point per billing period -- TECO publishes no
+     daily gas readings) and `teco:gas_cost`.
   2. Create/refresh **sensor entities** (amount due, last bill cost/usage/$ per kWh,
-     service period, account status, program flags) via the REST states API.
+     service period, account status, program flags -- plus `sensor.teco_gas_*` when
+     there is a gas account) via the REST states API.
 
 No MQTT and no custom integration required. When SUPERVISOR_TOKEN is absent
 (plain Docker / standalone), `available()` is False and publishing is skipped.
@@ -28,6 +32,15 @@ CORE_WS = "ws://supervisor/core/websocket"
 
 STAT_ENERGY = "teco:energy_consumption"
 STAT_COST = "teco:energy_cost"
+STAT_GAS = "teco:gas_consumption"
+STAT_GAS_COST = "teco:gas_cost"
+
+# TECO bills gas in therms, which HA's Energy Dashboard does not accept as a gas
+# unit. The meter index itself is in CCF (hundred cubic feet) and CCF *is* a valid
+# HA gas unit, so we publish the reading delta -- exact integers straight off the
+# meter, no conversion factor invented on our side. (For reference, TECO's own
+# therms/CCF heat-content ratio runs ~1.15.)
+GAS_UNIT = "CCF"
 
 # When true, set an existing grid source's cost to TECO's actual billed cost
 # (replacing any static $/kWh price). Opt-in — it changes the user's energy config.
@@ -84,6 +97,39 @@ def _build_stats(data: dict, tz: ZoneInfo):
     return energy, cost
 
 
+def _build_gas_stats(data: dict, tz: ZoneInfo):
+    """Return (usage_stats, cost_stats) for gas: one point per billing period.
+
+    Gas has no daily readings -- the ViewBill page loads meterDataMonthlyUsage and
+    no daily component at all -- so each bill contributes a single point covering
+    its service period, stamped at the period start.
+    """
+    gas = data.get("gas") or {}
+    bills = gas.get("bills") or []
+    rows = []
+    for b in bills:
+        start = _as_date(b.get("service_period_start"))
+        prev, curr = b.get("previous_reading"), b.get("current_reading")
+        if start is None or prev is None or curr is None:
+            continue
+        ccf = float(curr) - float(prev)
+        if ccf < 0:          # meter rollover -- skip rather than emit a negative
+            continue
+        rows.append((start, ccf, b.get("cost")))
+    rows.sort(key=lambda r: r[0])
+
+    usage, cost = [], []
+    usum = csum = 0.0
+    for d, ccf, amount in rows:
+        stamp = datetime(d.year, d.month, d.day, tzinfo=tz).isoformat()
+        usum += ccf
+        usage.append({"start": stamp, "state": ccf, "sum": round(usum, 3)})
+        if amount is not None:
+            csum += float(amount)
+            cost.append({"start": stamp, "state": float(amount), "sum": round(csum, 4)})
+    return usage, cost
+
+
 async def _ha_timezone(session: aiohttp.ClientSession) -> ZoneInfo:
     try:
         async with session.get(f"{CORE_REST}/config", headers=_headers()) as r:
@@ -95,17 +141,27 @@ async def _ha_timezone(session: aiohttp.ClientSession) -> ZoneInfo:
 
 async def _import_statistics(session, data, tz, log):
     energy, cost = _build_stats(data, tz)
-    if not energy:
+    gas, gas_cost = _build_gas_stats(data, tz)
+    if not energy and not gas:
+        log.warning("no statistics to import (no daily electric usage, no gas bills)")
         return
-    jobs = [
-        ({"has_mean": False, "has_sum": True, "name": "TECO Energy",
-          "source": "teco", "statistic_id": STAT_ENERGY,
-          "unit_of_measurement": "kWh"}, energy),
-    ]
+    jobs = []
+    if energy:
+        jobs.append(({"has_mean": False, "has_sum": True, "name": "TECO Energy",
+                      "source": "teco", "statistic_id": STAT_ENERGY,
+                      "unit_of_measurement": "kWh"}, energy))
     if cost:
         jobs.append(({"has_mean": False, "has_sum": True, "name": "TECO Energy Cost",
                       "source": "teco", "statistic_id": STAT_COST,
                       "unit_of_measurement": "USD"}, cost))
+    if gas:
+        jobs.append(({"has_mean": False, "has_sum": True, "name": "TECO Gas",
+                      "source": "teco", "statistic_id": STAT_GAS,
+                      "unit_of_measurement": GAS_UNIT}, gas))
+    if gas_cost:
+        jobs.append(({"has_mean": False, "has_sum": True, "name": "TECO Gas Cost",
+                      "source": "teco", "statistic_id": STAT_GAS_COST,
+                      "unit_of_measurement": "USD"}, gas_cost))
     async with session.ws_connect(CORE_WS, heartbeat=30) as ws:
         await ws.receive_json()                                   # auth_required
         await ws.send_json({"type": "auth", "access_token": SUPERVISOR_TOKEN})
@@ -171,6 +227,51 @@ def _sensor_payloads(data: dict) -> list[tuple[str, object, dict]]:
         s("sensor.teco_last_updated", data.get("fetched_at"),
           device_class="timestamp", friendly_name="TECO Last Updated"),
     ]
+    # --- gas (Peoples Gas), when the login has a gas account too ------------- #
+    gas = data.get("gas") or {}
+    if gas:
+        gcb = gas.get("current_bill") or {}
+        gbills = gas.get("bills") or []
+        glast = gbills[0] if gbills else {}
+        # TECO reports gas usage in therms; the meter index is CCF.
+        therms = glast.get("kwh_used")          # parse_meter_data stores TotalUsed here
+        prev, curr = glast.get("previous_reading"), glast.get("current_reading")
+        ccf = (float(curr) - float(prev)) if (prev is not None and curr is not None) else None
+        gcost = glast.get("cost")
+        rate = round(gcost / therms, 5) if (gcost and therms) else None
+        out += [
+            s("sensor.teco_gas_amount_due", gcb.get("total_amount_due"),
+              unit_of_measurement="USD", device_class="monetary",
+              friendly_name="TECO Gas Amount Due", icon="mdi:cash"),
+            s("sensor.teco_gas_due_date", gcb.get("due_date"),
+              device_class="date", friendly_name="TECO Gas Payment Due Date",
+              icon="mdi:calendar-clock"),
+            s("sensor.teco_gas_last_bill_cost", gcost,
+              unit_of_measurement="USD", device_class="monetary",
+              friendly_name="TECO Gas Last Bill Cost", icon="mdi:receipt-text",
+              service_period_start=glast.get("service_period_start"),
+              service_period_end=glast.get("service_period_end"),
+              previous_reading=prev, current_reading=curr),
+            s("sensor.teco_gas_last_bill_usage", therms,
+              unit_of_measurement="therms", state_class="total",
+              friendly_name="TECO Gas Last Bill Usage", icon="mdi:fire"),
+            s("sensor.teco_gas_last_bill_volume", ccf,
+              unit_of_measurement=GAS_UNIT, device_class="gas", state_class="total",
+              friendly_name="TECO Gas Last Bill Volume", icon="mdi:meter-gas"),
+            s("sensor.teco_gas_last_bill_rate", rate,
+              unit_of_measurement="USD/therm", friendly_name="TECO Gas Last Bill $/therm",
+              icon="mdi:cash-multiple"),
+            s("sensor.teco_gas_service_period_start", glast.get("service_period_start"),
+              device_class="date", friendly_name="TECO Gas Service Period Start",
+              icon="mdi:calendar-start"),
+            s("sensor.teco_gas_service_period_end", glast.get("service_period_end"),
+              device_class="date", friendly_name="TECO Gas Service Period End",
+              icon="mdi:calendar-end"),
+            s("sensor.teco_gas_service_days", glast.get("service_days"),
+              unit_of_measurement="d", friendly_name="TECO Gas Service Period Days",
+              icon="mdi:calendar-range"),
+        ]
+
     flag_meta = {
         "paperless": ("Paperless Billing", "mdi:file-document-outline"),
         "autopay": ("Autopay", "mdi:bank-transfer"),
@@ -237,7 +338,7 @@ def _grid_template() -> dict:
     }
 
 
-async def configure_energy(log) -> bool:
+async def configure_energy(log, has_gas: bool = False) -> bool:
     """Wire TECO into the HA Energy Dashboard — SAFELY, without double-counting.
 
     HA's grid source schema is flat: each grid source has a `stat_energy_from`
@@ -261,6 +362,28 @@ async def configure_energy(log) -> bool:
                 prefs = (await ws.receive_json()).get("result") or {}
                 sources = prefs.get("energy_sources", [])
                 grids = [x for x in sources if x.get("type") == "grid"]
+
+                # Gas is additive and can't double-count a grid source, so it is
+                # safe to add whenever we actually have gas statistics.
+                changed_gas = False
+                if has_gas:
+                    gas_srcs = [x for x in sources if x.get("type") == "gas"]
+                    mine = next((g for g in gas_srcs
+                                 if g.get("stat_energy_from") == STAT_GAS), None)
+                    if mine is None:
+                        sources.append({
+                            "type": "gas",
+                            "stat_energy_from": STAT_GAS,
+                            "stat_cost": STAT_GAS_COST,
+                            "entity_energy_price": None,
+                            "number_energy_price": None,
+                        })
+                        changed_gas = True
+                        log.info("energy: added TECO gas source (%s, %s)",
+                                 STAT_GAS, GAS_UNIT)
+                    elif mine.get("stat_cost") != STAT_GAS_COST:
+                        mine["stat_cost"] = STAT_GAS_COST
+                        changed_gas = True
 
                 ours = next((g for g in grids if g.get("stat_energy_from") == STAT_ENERGY), None)
                 changed = False
@@ -290,9 +413,8 @@ async def configure_energy(log) -> bool:
                     log.info("energy: a grid source (%s) is already configured; leaving it "
                              "alone. Enable 'grid_cost_from_teco' to use TECO's actual cost, "
                              "or add the teco statistics manually.", other)
-                    return True
 
-                if changed:
+                if changed or changed_gas:
                     await ws.send_json({
                         "id": 2, "type": "energy/save_prefs",
                         "energy_sources": sources,

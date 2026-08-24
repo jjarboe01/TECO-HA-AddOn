@@ -7,6 +7,8 @@ get() { python3 -c "import json;print(json.load(open('$OPTS')).get('$1', '$2'))"
 
 export TECO_USER="$(get teco_user '')"
 export TECO_PASS="$(get teco_pass '')"
+# optional: pin a contract account when the login has more than one
+export TECO_ACCOUNT="$(get account_id '')"
 export BACKFILL_BILLS="$(get backfill_bills 36)"
 export POLL_INTERVAL_HOURS="$(get poll_interval_hours 6)"
 export SENSOR_REFRESH_MIN="$(get sensor_refresh_min 5)"

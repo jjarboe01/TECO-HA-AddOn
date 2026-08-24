@@ -12,6 +12,14 @@ bill — so your history grows past TECO's ~3-year window.
 3. Open the **Configuration** tab and enter:
    - **teco_user** — your TECO portal username
    - **teco_pass** — your TECO portal password (stored by Supervisor; shown as a password field)
+   - **account_id** — *optional.* Only matters if your login has more than one account
+     (e.g. Tampa Electric **and** Peoples Gas, or several premises). Every account is
+     fetched regardless; this only decides which one is treated as **primary** — the
+     account behind the plain `sensor.teco_*` entities and the electricity source on
+     the Energy Dashboard. Leave it empty and the add-on picks the **electric**
+     account. The add-on logs the accounts it finds
+     (`accounts: ...NNNN (gas), ...NNNN (electric)`) so you can copy the right number
+     from the log if the automatic choice is wrong.
    - **backfill_bills** — how many bills to pull on first run (default 36 ≈ 3 years)
    - **session_ttl_min** — re-login interval (default 30)
 4. **Start** the add-on, then open it from the **TECO Billing** sidebar panel.
@@ -49,6 +57,27 @@ no MQTT:
   `sensor.teco_service_days`, `sensor.teco_account_status`, plus
   `binary_sensor.teco_paperless` / `_autopay` / `_budget_billing` / etc., refreshed
   each poll via the REST states API.
+
+### Gas (Peoples Gas)
+If your login also has a gas account, it is fetched on the same poll and published
+alongside electric — no extra configuration:
+
+- **Energy Dashboard** — a **gas source** fed by `teco:gas_consumption` with
+  `teco:gas_cost` attached.
+- **Sensors** — `sensor.teco_gas_amount_due`, `_last_bill_cost`, `_last_bill_usage`
+  (therms), `_last_bill_volume` (CCF), `_last_bill_rate` ($/therm),
+  `_service_period_start` / `_end`, `_service_days`.
+
+Two things behave differently from electric, both because of what TECO publishes:
+
+- **Usage is in CCF, not therms.** TECO bills gas in therms, which Home Assistant does
+  not accept as a gas unit. The add-on publishes the meter reading delta
+  (`CurrentReading - PreviousReading`), which is CCF — the meter's own index — so no
+  conversion factor is invented. The therm figure is still on
+  `sensor.teco_gas_last_bill_usage`.
+- **Statistics are one point per billing period, not daily.** TECO publishes no daily
+  gas readings at all, so the gas bars on the Energy Dashboard land on the billing
+  period rather than spreading across days.
 
 ## Notes
 - **Run on your LAN.** reCAPTCHA v3 scores datacenter IPs harshly; Home Assistant

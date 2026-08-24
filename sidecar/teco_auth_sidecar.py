@@ -64,10 +64,18 @@ BACKFILL_BILLS = int(os.environ.get("BACKFILL_BILLS", "36"))
 POLL_INTERVAL = max(1, int(os.environ.get("POLL_INTERVAL_HOURS", "6"))) * 3600
 SENSOR_REFRESH = max(1, int(os.environ.get("SENSOR_REFRESH_MIN", "5"))) * 60
 SETUP_ENERGY = os.environ.get("SETUP_ENERGY_DASHBOARD", "1") != "0"
+# Contract account to use when the login has more than one (electric + gas, or
+# multiple premises) and TECO parks us on the /Selection picker. Empty = auto:
+# prefer the ELECTRIC account, else the first row.
+ACCOUNT_ID = (os.environ.get("TECO_ACCOUNT") or "").strip()
 HEADLESS = os.environ.get("HEADLESS", "1") != "0"
 TOKEN = os.environ.get("SIDECAR_TOKEN")
 CACHE_DIR = os.environ.get("CACHE_DIR", os.path.join(os.path.dirname(__file__), "cache"))
 CACHE_FILE = os.path.join(CACHE_DIR, "bills.json")
+# account_id -> "electric"/"gas", persisted so a restart knows which is which
+# BEFORE the first poll finishes. Without it every account looks unlabelled and
+# the dashboard cannot tell kWh from therms.
+ACCT_FILE = os.path.join(CACHE_DIR, "accounts.json")
 
 STATUS_ENDPOINTS = {
     "paperless": "/Dashboard/GetPaperlessBillingStatus",
@@ -79,7 +87,11 @@ STATUS_ENDPOINTS = {
     "power_updates": "/Dashboard/GetPowerUpdatesStatus",
 }
 # ibill components we care about, by the URL's trailing path segment (lowercased)
-WANT_COMPONENTS = {"meterdata", "chargedetails", "billselector", "meterdatadailyusage"}
+WANT_COMPONENTS = {"meterdata", "chargedetails", "billselector",
+                   "meterdatadailyusage", "meterdatamonthlyusage"}
+
+# The account picker at /Selection: each account is a clickable <tr>.
+SELECTION_ROW = 'tr[data-pdsa-action="selection"]'
 
 
 def _coerce_flag(value):
@@ -99,6 +111,22 @@ def _coerce_flag(value):
             if k in value:
                 return _coerce_flag(value[k])
     return None
+
+
+def _load_accounts() -> dict:
+    try:
+        with open(ACCT_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_accounts(m: dict) -> None:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    tmp = ACCT_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(m, f)
+    os.replace(tmp, ACCT_FILE)
 
 
 def _load_cache() -> dict:
@@ -131,6 +159,11 @@ class TecoSession:
         self._daily_url: str | None = None   # meterDataDailyUsage endpoint URL
         self._meter_dln: str | None = None   # electric meter DLN (for daily queries)
         self._recent_daily: list = []        # current-period daily usage (between bills)
+        self._accounts: list[dict] = []      # every account the picker offers
+        self._known = _load_accounts()       # {account_id: {service, primary}}
+        # survives a restart, so the dashboard knows kWh from therms immediately
+        self._primary_account: str | None = next(
+            (k for k, v in self._known.items() if v.get("primary")), None)
 
     # ---- browser / auth ---------------------------------------------------- #
     async def _ensure_browser(self) -> None:
@@ -173,6 +206,113 @@ class TecoSession:
             raise RuntimeError("login failed (reCAPTCHA score or bad credentials)")
         self._logged_in_at = time.time()
         LOG.info("login OK")
+        await self._select_account()
+
+    async def _select_account(self) -> bool:
+        """Handle the /Selection account picker.
+
+        A login with more than one contract account (e.g. Tampa Electric + Peoples
+        Gas, or several premises) lands on /Selection instead of the dashboard.
+        That page still has a "Log Off" link, so _is_logged_in() is happy while
+        every dashboard selector and every /Dashboard/* endpoint fails -- which is
+        exactly the "login OK, no data" symptom (issue #3).
+
+        Preference: TECO_ACCOUNT (exact contract account id) -> first ELECTRIC
+        account -> first row. Returns True if a selection was made.
+        """
+        try:
+            if "/Selection" not in self._page.url:
+                return False
+            rows = await self._page.query_selector_all(SELECTION_ROW)
+            if not rows:
+                LOG.warning("on the account picker but found no selectable accounts; "
+                            "the page layout may have changed")
+                return False
+
+            cands = []
+            for r in rows:
+                val = await r.get_attribute("data-pdsa-val")
+                # text_content(), NOT inner_text(): the "Electric Service" / "Gas
+                # Service" label is visually-hidden, so inner_text() omits it.
+                txt = " ".join(((await r.text_content()) or "").split())
+                cands.append((val, txt, r))
+            LOG.info("account picker: %d account(s) -> %s",
+                     len(cands), ", ".join(f"...{c[0][-4:]}" for c in cands if c[0]))
+
+            pick = None
+            if ACCOUNT_ID:
+                pick = next((c for c in cands if c[0] == ACCOUNT_ID), None)
+                if not pick:
+                    LOG.warning("configured account_id %s is not in the picker; "
+                                "falling back to auto-select", ACCOUNT_ID)
+            if not pick:
+                pick = next((c for c in cands if "electric" in c[1].lower()), None)
+                if pick and len(cands) > 1:
+                    LOG.info("auto-selected the ELECTRIC account; set 'account_id' "
+                             "in the add-on config to pin a different one")
+            if not pick:
+                pick = cands[0]
+                LOG.warning("no ELECTRIC account matched; falling back to the first "
+                            "account (...%s). Set 'account_id' if that is wrong.",
+                            (pick[0] or "")[-4:])
+
+            LOG.info("selecting account ...%s", (pick[0] or "")[-4:])
+            async with self._page.expect_navigation(wait_until="networkidle", timeout=60000):
+                await pick[2].click()
+            await self._page.wait_for_timeout(1200)
+            return True
+        except Exception:  # noqa: BLE001
+            LOG.exception("account selection failed")
+            return False
+
+    async def _list_accounts(self) -> list[dict]:
+        """Every account on the /Selection picker: {id, service, label}.
+
+        A single-account login never sees the picker; it returns [] and the caller
+        just uses whatever account the dashboard is already on.
+        """
+        try:
+            if "/Selection" not in self._page.url:
+                await self._page.goto(BASE + "/Selection", wait_until="networkidle",
+                                      timeout=60000)
+            if "/Selection" not in self._page.url:
+                return []   # single-account login: TECO goes straight to the dashboard
+            out = []
+            for r in await self._page.query_selector_all(SELECTION_ROW):
+                cid = await r.get_attribute("data-pdsa-val")
+                # text_content(), not inner_text(): the service label is hidden markup
+                txt = " ".join(((await r.text_content()) or "").split())
+                low = txt.lower()
+                service = "electric" if "electric" in low else "gas" if "gas" in low else "other"
+                if cid:
+                    out.append({"id": cid, "service": service, "label": txt})
+            for a in out:               # remember across restarts
+                self._known.setdefault(a["id"], {})["service"] = a["service"]
+            if out:
+                _save_accounts(self._known)
+            return out
+        except Exception:  # noqa: BLE001
+            LOG.exception("could not enumerate accounts")
+            return []
+
+    async def _select_by_id(self, caid: str) -> bool:
+        """Switch the session to a specific contract account via the picker."""
+        try:
+            if "/Selection" not in self._page.url:
+                await self._page.goto(BASE + "/Selection", wait_until="networkidle",
+                                      timeout=60000)
+            row = await self._page.query_selector(
+                f'{SELECTION_ROW}[data-pdsa-val="{caid}"]')
+            if not row:
+                LOG.warning("account %s not offered by the picker", caid)
+                return False
+            async with self._page.expect_navigation(wait_until="networkidle", timeout=60000):
+                await row.click()
+            await self._page.wait_for_timeout(1200)
+            return True
+        except Exception:  # noqa: BLE001
+            LOG.exception("could not switch to account %s", caid)
+            return False
 
     async def _ensure_session(self) -> None:
         await self._ensure_browser()
@@ -275,78 +415,99 @@ class TecoSession:
         return out
 
     # ---- main orchestration ----------------------------------------------- #
-    async def fetch_all(self, force: bool = False) -> dict:
-        async with self._lock:
-            await self._ensure_session()
+    async def _fetch_current_account(self, force: bool = False,
+                                     service: str = "electric") -> dict:
+        """Scrape + backfill whichever contract account the session is on now."""
+        html = await self._page.content()
+        account = parsers.parse_account_info(html)
+        current_bill = parsers.parse_current_bill(html)
+        caid = account.contract_account_id
+        is_primary = (caid == self._primary_account)
 
-            # dashboard: account, current bill, program flags
-            await self._page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
-            await self._page.wait_for_timeout(1200)
-            if not await self._is_logged_in():
-                await self._login()
-                await self._page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
-            html = await self._page.content()
-            account = parsers.parse_account_info(html)
-            current_bill = parsers.parse_current_bill(html)
-            caid = account.contract_account_id
+        flags: dict[str, bool | None] = {}
+        for name, path in STATUS_ENDPOINTS.items():
+            try:
+                raw = await self._page.evaluate(
+                    """async (p) => { const r = await fetch(p,{method:'POST',credentials:'include',
+                       headers:{'X-Requested-With':'XMLHttpRequest','Content-Type':'application/json'},body:'{}'});
+                       const t = await r.text(); try { return JSON.parse(t);} catch(e){return t;} }""", path)
+                flags[name] = _coerce_flag(raw)
+            except Exception:
+                flags[name] = None
 
-            flags: dict[str, bool | None] = {}
-            for name, path in STATUS_ENDPOINTS.items():
-                try:
-                    raw = await self._page.evaluate(
-                        """async (p) => { const r = await fetch(p,{method:'POST',credentials:'include',
-                           headers:{'X-Requested-With':'XMLHttpRequest','Content-Type':'application/json'},body:'{}'});
-                           const t = await r.text(); try { return JSON.parse(t);} catch(e){return t;} }""", path)
-                    flags[name] = _coerce_flag(raw)
-                except Exception:
-                    flags[name] = None
+        # enumerate bills: open the most-recent ViewBill to get BillSelector + monthly
+        bills_list: list[dict] = []
+        monthly: list = []
+        if caid and current_bill.view_bill_url:
+            comps = await self._navigate_collect(
+                current_bill.view_bill_url if current_bill.view_bill_url.startswith("http")
+                else BASE + current_bill.view_bill_url)
+            bills_list = ibill.parse_bill_selector(comps.get("billselector", {}))
+            mk = next((k for k in comps if "monthly" in k), None)
+            if mk:
+                monthly = ibill.parse_monthly_usage(comps[mk])
+            # capture the electric meter DLN for recent-daily queries
+            for m in ((comps.get("meterdata") or {}).get("MeterTabel") or []):
+                if str(m.get("Service", "")).lower() == "electric" and m.get("DLN"):
+                    self._meter_dln = str(m.get("DLN"))
+        else:
+            # Do NOT fail silently here -- this is the branch that produced
+            # "login OK, no data" with a clean log (issue #3).
+            LOG.error(
+                "dashboard scrape found nothing (url=%s, contract_account_id=%s, "
+                "view_bill_url=%s) -- skipping bill fetch. If the url is /Selection "
+                "the account picker was not handled; otherwise the portal markup "
+                "may have changed.",
+                self._page.url, caid, current_bill.view_bill_url)
 
-            # enumerate bills: open the most-recent ViewBill to get BillSelector + monthly
-            bills_list: list[dict] = []
-            monthly: list = []
-            if caid and current_bill.view_bill_url:
-                inid0 = _inid_from_url(current_bill.view_bill_url)
-                comps = await self._navigate_collect(
-                    current_bill.view_bill_url if current_bill.view_bill_url.startswith("http")
-                    else BASE + current_bill.view_bill_url)
-                bills_list = ibill.parse_bill_selector(comps.get("billselector", {}))
-                # monthly usage may load on this page too
-                mk = next((k for k in comps if "monthly" in k), None)
-                if mk:
-                    monthly = ibill.parse_monthly_usage(comps[mk])
-                # capture the electric meter DLN for recent-daily queries
-                for m in ((comps.get("meterdata") or {}).get("MeterTabel") or []):
-                    if str(m.get("Service", "")).lower() == "electric" and m.get("DLN"):
-                        self._meter_dln = str(m.get("DLN"))
-
-            # fetch any bills in the current window not already cached (or all if force).
-            # NOTE: the cache is append-only — bills are never purged, so the archive
-            # keeps growing and retains data even after TECO drops it from BillSelector.
-            wanted = bills_list[:BACKFILL_BILLS] if bills_list else []
-            for b in wanted:
-                inid = b.get("invoice_id")
-                if not inid or not caid:
+        # fetch any bills in the current window not already cached (or all if force).
+        # NOTE: the cache is append-only -- bills are never purged, so the archive
+        # keeps growing and retains data even after TECO drops it from BillSelector.
+        wanted = bills_list[:BACKFILL_BILLS] if bills_list else []
+        migrated = 0
+        for b in wanted:
+            inid = b.get("invoice_id")
+            if not inid or not caid:
+                continue
+            cached = self._cache.get(inid)
+            if cached and not force:
+                # Migrate entries cached before multi-account support: appearing in
+                # THIS account's BillSelector is proof of ownership, so stamp it
+                # rather than leaving it attributed to whoever is primary today.
+                if not cached.get("account_id") or not cached.get("service"):
+                    cached["account_id"] = caid
+                    cached["service"] = service
+                    migrated += 1
+                # A gas bill has no daily readings at all, so the "incomplete daily"
+                # re-fetch below would loop on it forever -- only apply it to accounts
+                # that actually publish daily data.
+                if not is_primary:
                     continue
-                cached = self._cache.get(inid)
-                if cached and not force:
-                    # TECO can publish a bill's total before its day-by-day readings,
-                    # so re-fetch a cached bill only if its daily looks incomplete.
-                    du = cached.get("daily_usage") or []
-                    sd = cached.get("service_days") or 0
-                    if not sd or len(du) >= sd - 2:
-                        continue
-                    LOG.info("refreshing incomplete daily for bill %s (had %d of ~%d days)",
-                             inid, len(du), sd)
-                else:
-                    LOG.info("fetching bill %s (%s)", inid, b.get("label"))
-                detail = await self._bill_detail(caid, inid)
-                detail["bill_date"] = b.get("bill_date")
-                detail["label"] = b.get("label")
-                self._cache[inid] = detail
-                _save_cache(self._cache)
+                # TECO can publish a bill's total before its day-by-day readings,
+                # so re-fetch a cached bill only if its daily looks incomplete.
+                du = cached.get("daily_usage") or []
+                sd = cached.get("service_days") or 0
+                if not sd or len(du) >= sd - 2:
+                    continue
+                LOG.info("refreshing incomplete daily for bill %s (had %d of ~%d days)",
+                         inid, len(du), sd)
+            else:
+                LOG.info("fetching bill %s (%s)", inid, b.get("label"))
+            detail = await self._bill_detail(caid, inid)
+            detail["bill_date"] = b.get("bill_date")
+            detail["label"] = b.get("label")
+            detail["account_id"] = caid
+            detail["service"] = service
+            self._cache[inid] = detail
+            _save_cache(self._cache)
 
-            # pull recent days BETWEEN bills so the chart tracks past the last bill,
-            # without waiting for the next bill to close (uses the captured session token)
+        if migrated:
+            LOG.info("tagged %d cached bill(s) with account %s", migrated, caid)
+            _save_cache(self._cache)
+
+        # pull recent days BETWEEN bills so the chart tracks past the last bill,
+        # without waiting for the next bill to close (electric only -- gas has no daily)
+        if is_primary:
             try:
                 latest = self._latest_daily_date()
                 since = (latest + timedelta(days=1)) if latest \
@@ -357,30 +518,121 @@ class TecoSession:
             except Exception:  # noqa: BLE001
                 LOG.exception("recent daily fetch failed")
 
-            # assemble the response from the ENTIRE cache (full retained history)
-            details, daily_clean = self._assemble_from_cache()
+        details, daily_clean = self._assemble_from_cache(caid)
+        return {
+            "account": models.to_jsonable(account),
+            "current_bill": models.to_jsonable(current_bill),
+            "flags": flags,
+            "bills": details,
+            "monthly_usage": models.to_jsonable(monthly),
+            "daily_usage": daily_clean,
+        }
+
+    async def fetch_all(self, force: bool = False) -> dict:
+        """Fetch every account on the login (electric primary, gas alongside it)."""
+        async with self._lock:
+            await self._ensure_session()
+
+            await self._page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
+            await self._page.wait_for_timeout(1200)
+            if not await self._is_logged_in():
+                await self._login()
+                await self._page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
+
+            # Which accounts does this login have? [] => single-account, no picker.
+            self._accounts = await self._list_accounts()
+            if self._accounts:
+                LOG.info("accounts: %s", ", ".join(
+                    f"...{a['id'][-4:]} ({a['service']})" for a in self._accounts))
+
+            # The primary account drives the existing electric sensors + statistics.
+            primary = None
+            if ACCOUNT_ID:
+                primary = next((a for a in self._accounts if a["id"] == ACCOUNT_ID), None)
+            if not primary:
+                primary = next((a for a in self._accounts if a["service"] == "electric"), None)
+            if not primary and self._accounts:
+                primary = self._accounts[0]
+            self._primary_account = primary["id"] if primary else None
+            if self._primary_account:
+                for aid, v in self._known.items():
+                    v["primary"] = (aid == self._primary_account)
+                self._known.setdefault(self._primary_account, {})["primary"] = True
+                _save_accounts(self._known)
+
+            # Walk the accounts, primary first so a mid-run failure still leaves the
+            # electric data (the thing the Energy Dashboard needs) populated.
+            order = [primary] if primary else []
+            order += [a for a in self._accounts
+                      if not primary or a["id"] != primary["id"]]
+            if not order:
+                order = [None]   # single-account login: use the current dashboard
+
+            per_account: dict[str, dict] = {}
+            main: dict | None = None
+            for acct in order:
+                if acct is not None:
+                    if not await self._select_by_id(acct["id"]):
+                        continue
+                elif "/Selection" in self._page.url:
+                    await self._select_account()
+                try:
+                    got = await self._fetch_current_account(
+                        force=force, service=acct["service"] if acct else "electric")
+                except Exception:  # noqa: BLE001
+                    LOG.exception("fetch failed for account %s",
+                                  acct["id"] if acct else "(current)")
+                    continue
+                cid = (got.get("account") or {}).get("contract_account_id") or (
+                    acct["id"] if acct else "unknown")
+                got["service"] = acct["service"] if acct else "electric"
+                per_account[cid] = got
+                if main is None:
+                    main = got
+                    if self._primary_account is None:
+                        self._primary_account = cid
+
+            if main is None:
+                raise RuntimeError("no account could be fetched")
+
+            gas = next((v for v in per_account.values() if v.get("service") == "gas"), None)
             result = {
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
-                "account": models.to_jsonable(account),
-                "current_bill": models.to_jsonable(current_bill),
-                "flags": flags,
-                "bills": details,
-                "monthly_usage": models.to_jsonable(monthly),
-                "daily_usage": daily_clean,
-                "counts": {"bills": len(details), "daily": len(daily_clean),
-                           "months": len(monthly), "archived_bills": len(self._cache)},
+                **{k: main[k] for k in
+                   ("account", "current_bill", "flags", "bills",
+                    "monthly_usage", "daily_usage")},
+                "service": main.get("service", "electric"),
+                "accounts": per_account,
+                "gas": gas,
+                "counts": {"bills": len(main["bills"]),
+                           "daily": len(main["daily_usage"]),
+                           "months": len(main["monthly_usage"]),
+                           "gas_bills": len(gas["bills"]) if gas else 0,
+                           "accounts": len(per_account),
+                           "archived_bills": len(self._cache)},
             }
             self._last_data = result   # for the sensor heartbeat between full fetches
             return result
 
-    def _assemble_from_cache(self) -> tuple[list[dict], list[dict]]:
-        """Build (bills, daily_usage) from the full append-only cache, newest first."""
+
+    def _assemble_from_cache(self, account_id: str | None = None
+                             ) -> tuple[list[dict], list[dict]]:
+        """Build (bills, daily_usage) from the full append-only cache, newest first.
+
+        `account_id` filters to one contract account; None returns everything.
+        Entries cached before multi-account support have no "account_id" and are
+        attributed to the primary (electric) account.
+        """
         details: list[dict] = []
         daily_all: list[dict] = []
         for detail in self._cache.values():
+            owner = detail.get("account_id") or self._primary_account
+            if account_id is not None and owner != account_id:
+                continue
             details.append({k: v for k, v in detail.items() if k != "daily_usage"})
             daily_all.extend(detail.get("daily_usage", []))
-        daily_all.extend(self._recent_daily)   # current-period days (between bills)
+        if account_id is None or account_id == self._primary_account:
+            daily_all.extend(self._recent_daily)  # current-period days (between bills)
         details.sort(key=lambda d: (d.get("service_period_end") or d.get("bill_date") or ""),
                      reverse=True)
         # de-dupe daily by date (periods can share a boundary day)
@@ -399,6 +651,7 @@ class TecoSession:
         async with self._lock:
             await self._ensure_session()
             await self._page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
+            await self._select_account()
             html = await self._page.content()
             caid = parsers.parse_account_info(html).contract_account_id
             if not caid:
@@ -413,11 +666,31 @@ class TecoSession:
             return detail
 
     def export(self) -> dict:
-        """Everything ever archived (full cache), for >3yr retention/export."""
+        """Everything ever archived (full cache), for >3yr retention/export.
+
+        This deliberately spans EVERY contract account, so the dashboard/CSV has
+        the complete archive. Each bill carries `account_id` + `service`, and the
+        `accounts` map below lets a consumer group by them -- without that, gas
+        bills (therms) and electric bills (kWh) plot on the same axis.
+        """
         details, daily = self._assemble_from_cache()
+        accounts: dict[str, dict] = {}
+        for d in details:
+            aid = d.get("account_id") or self._primary_account or "unknown"
+            a = accounts.setdefault(aid, {"account_id": aid, "service": None, "bills": 0})
+            a["bills"] += 1
+            if not a["service"] and d.get("service"):
+                a["service"] = d["service"]
+        for aid, a in accounts.items():
+            # Fall back to what we remembered, then give up honestly. Guessing
+            # "electric" here mislabelled the gas account (and its units) on every
+            # restart until the first poll finished.
+            a["service"] = a["service"] or (self._known.get(aid) or {}).get("service")
         return {
             "exported_at": datetime.now(timezone.utc).isoformat(),
             "archived_bills": len(self._cache),
+            "primary_account": self._primary_account,
+            "accounts": accounts,
             "bills": details,
             "daily_usage": daily,
         }
@@ -463,7 +736,8 @@ async def _poll_loop():
                 if ha_publish.available():
                     await ha_publish.publish(data, LOG)     # statistics + sensors
                     if SETUP_ENERGY and not energy_configured:
-                        energy_configured = await ha_publish.configure_energy(LOG)  # retry until ok
+                        energy_configured = await ha_publish.configure_energy(
+                            LOG, has_gas=bool(data.get("gas")))  # retry until ok
                 else:
                     LOG.info("refreshed (%d bills); HA publish skipped (no SUPERVISOR_TOKEN)",
                              data.get("counts", {}).get("archived_bills", 0))
@@ -531,8 +805,9 @@ try:
         details, _u = session._assemble_from_cache()
         return {"archived_bills": len(details),
                 "bills": [{k: b.get(k) for k in
-                           ("invoice_id", "label", "bill_date", "service_period_start",
-                            "service_period_end", "service_days", "kwh_used", "cost")}
+                           ("account_id", "invoice_id", "label", "bill_date",
+                            "service_period_start", "service_period_end",
+                            "service_days", "kwh_used", "cost")}
                           for b in details]}
 
     @app.post("/reassemble")
@@ -553,14 +828,13 @@ try:
             import io
             buf = io.StringIO()
             w = csv.writer(buf)
-            w.writerow(["invoice_id", "label", "bill_date", "service_period_start",
-                        "service_period_end", "service_days", "kwh_used", "cost",
-                        "previous_reading", "current_reading", "meter_number"])
+            cols = ("account_id", "invoice_id", "label", "bill_date",
+                    "service_period_start", "service_period_end", "service_days",
+                    "kwh_used", "cost", "previous_reading", "current_reading",
+                    "meter_number")
+            w.writerow(cols)
             for b in data["bills"]:
-                w.writerow([b.get(k) for k in
-                            ("invoice_id", "label", "bill_date", "service_period_start",
-                             "service_period_end", "service_days", "kwh_used", "cost",
-                             "previous_reading", "current_reading", "meter_number")])
+                w.writerow([b.get(k) for k in cols])
             from fastapi.responses import Response
             return Response(content=buf.getvalue(), media_type="text/csv",
                             headers={"Content-Disposition":

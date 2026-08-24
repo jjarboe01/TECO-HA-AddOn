@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.3.2
+- **Fix: after a restart, the gas account showed as "Electric" with kWh units** until the
+  first poll finished. The service label lived only on cached bills, so a cache written by
+  an older version had none, and `/export` filled the gap by assuming `electric` — which
+  also made the dashboard default to the *gas* account (the first one that then looked
+  electric). The account -> service map is now persisted to `accounts.json` beside the bill
+  cache, so a restart knows kWh from therms before it talks to TECO.
+- `/export` no longer guesses a service it does not know, and the dashboard renders an
+  unlabelled account as "Account" with neutral units instead of asserting Electric/kWh.
+
+## 1.3.1
+- **Fix: gas bills were being plotted in the electric charts.** The sidebar dashboard
+  loads `/export`, which spans every contract account, so once gas arrived in 1.3.0 its
+  bills (therms) were drawn on the same axis as electric (kWh) — showing up as a row of
+  tiny bars between the real ones, and dragging the summary line down to `min 1`. The
+  dashboard now has an **account switcher** and shows one account at a time, with units,
+  headings, table columns and tooltips following the selected service (kWh / $/kWh vs
+  therms / $/therm). The daily-usage chart is hidden for gas, which has no daily data.
+- Gas quantities render with one decimal — 4.6 therms was displaying as `5`.
+- Each archived bill now records its `service`, so the split survives a restart; older
+  cached bills are tagged in place on the next poll. `/export` gained an `accounts`
+  summary and `primary_account`.
+- The CSV export still spans every account by design (it is the full archive) and
+  carries `account_id` per row.
+
+## 1.3.0
+- **Gas service (Peoples Gas) is now pulled alongside electric.** A login that has both
+  accounts now fetches both each poll instead of only the selected one. Gas arrives as
+  `sensor.teco_gas_*` entities (amount due, last bill cost, therms, CCF, $/therm, service
+  period) and as its own **gas source on the Energy Dashboard**.
+- **Gas usage is published in CCF**, taken from the meter reading delta
+  (`CurrentReading - PreviousReading`). TECO bills gas in therms, which HA does not
+  accept as a gas unit; CCF is the meter's own index, so no conversion factor is
+  invented. The therm figure is still published on `sensor.teco_gas_last_bill_usage`.
+- **Gas statistics are one point per billing period.** TECO publishes no daily gas
+  readings at all (the gas ViewBill page loads `meterDataMonthlyUsage` and no daily
+  component), so gas cannot be daily the way electric is.
+- The bill archive is now tagged by contract account, and `/bills` + `/export` include
+  an `account_id` column so gas and electric rows are distinguishable.
+
+## 1.2.0
+- **Fix: "login OK, no data" on logins with more than one account (#3).** TECO parks
+  multi-account logins (e.g. Tampa Electric + Peoples Gas, or several premises) on an
+  `/Selection` account picker instead of the dashboard. That page still has a "Log Off"
+  link, so the session looked healthy while every dashboard selector and every
+  `/Dashboard/*` endpoint failed — the add-on published 9 placeholder entities, imported
+  zero statistics, and logged nothing. The picker is now handled: it selects the
+  **electric** account automatically, or the one pinned by the new **account_id** option.
+- **New option `account_id`** — contract account number to use when the picker offers
+  several. Leave empty to auto-select the electric account.
+- **No more silent no-op.** When the dashboard scrape comes back empty the add-on now
+  logs the landing URL and what was missing, instead of skipping the bill fetch quietly.
+- **Fix: `monthly_usage` was always empty** — the `meterDataMonthlyUsage` component was
+  never added to the collected set, so the response was discarded before it was parsed.
+
 ## 1.1.1
 - **Fix: daily usage (and the $/kWh chart) now update when a new bill posts.** TECO can
   publish a bill's total before its day-by-day readings are available; a bill fetched in
